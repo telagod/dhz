@@ -433,7 +433,10 @@ fn serveConn(fd: i32) void {
         const origin = headerValue(req.headers, "origin");
         const upgrade_h = headerValue(req.headers, "upgrade");
         const is_upgrade = std.mem.eql(u8, req.method, "GET") and upgrade_h != null and std.mem.indexOf(u8, upgrade_h.?, "websocket") != null;
-        if (std.c.getenv("DSH_HTTP_TRACE") != null) std.debug.print("[http-req] {s} {s} sfs={s} origin={s} upg={s}\n", .{ req.method, req.path, sfs orelse "-", origin orelse "-", if (is_upgrade) "ws" else "-" });
+        if (std.c.getenv("DSH_HTTP_TRACE") != null) {
+            std.debug.print("[http-req] {s} {s} sfs={s} origin={s} upg={s}\n", .{ req.method, req.path, sfs orelse "-", origin orelse "-", if (is_upgrade) "ws" else "-" });
+            if (is_upgrade) std.debug.print("[ws-hs] full headers:\n{s}\n", .{req.headers});
+        }
         if (is_upgrade and trust_fence.isTrustedApiRequest(host_h, sfs, origin, &.{})) {
             if (callbackForPath(req.path)) |cb| {
                 // 消费升级请求帧（帧通道从字节 0 起）
@@ -824,13 +827,15 @@ fn handleConnection(conn: i32) bool {
 
 // ---- WS 升级通道（101 + 帧循环）----
 
-const WsFrame = struct { payload: []u8, total: usize };
+const WsFrame = struct { payload: []u8, total: usize, opcode: u8 };
 
-/// masked 客户端帧解析（FIN+text；126/127 扩展长；原地解掩码——buf 须可变）。
+/// masked 客户端帧解析（FIN；126/127 扩展长；原地解掩码——buf 须可变）。
+/// opcode 一并返回：ping(9) 由调用方直答 pong（RFC6455 §5.5.2——Firefox 主动 ping，
+/// 不回 pong 即断连；node ws 库宽容不发 ping 故曾全绿——实锤差异点）。
 fn parseWsFrame(raw: []u8) ?WsFrame {
     if (raw.len < 2) return null;
     const op = raw[0] & 0x0f;
-    if (op != 1) return null; // 本通道仅 text 帧（其余忽略——协议面留档）
+    if (op != 1 and op != 9) return null; // text + ping；close(8) 等由缓冲消费/EOF 面处理
     var len: usize = raw[1] & 0x7f;
     var off: usize = 2;
     if (len == 126) {
@@ -849,7 +854,7 @@ fn parseWsFrame(raw: []u8) ?WsFrame {
     const mask = raw[off .. off + 4];
     const payload = raw[off + 4 .. off + 4 + len];
     for (payload, 0..) |ch, i| payload[i] = ch ^ mask[i % 4];
-    return .{ .payload = payload, .total = off + 4 + len };
+    return .{ .payload = payload, .total = off + 4 + len, .opcode = op };
 }
 
 /// 服务端帧（FIN+text，unmasked）。
@@ -940,6 +945,28 @@ fn serveUpgraded(entry: *ConnEntry) void {
     }
     const ctx = g_req_ctx orelse return;
     while (parseWsFrame(entry.buf[0..entry.len])) |fr| {
+        if (fr.opcode == 9) {
+            // ping → pong（同 payload；服务端帧 unmasked）
+            var ph: [10]u8 = undefined;
+            var ph_len: usize = 0;
+            if (fr.payload.len < 126) {
+                ph[0] = 0x8A;
+                ph[1] = @intCast(fr.payload.len);
+                ph_len = 2;
+            } else {
+                ph[0] = 0x8A;
+                ph[1] = 126;
+                ph[2] = @intCast(fr.payload.len >> 8);
+                ph[3] = @intCast(fr.payload.len & 0xff);
+                ph_len = 4;
+            }
+            _ = http_svc.c.dsh_sock_write(fd, &ph, ph_len);
+            _ = http_svc.c.dsh_sock_write(fd, fr.payload.ptr, fr.payload.len);
+            const rp = entry.len - fr.total;
+            std.mem.copyForwards(u8, entry.buf[0..rp], entry.buf[fr.total..entry.len]);
+            entry.len = rp;
+            continue;
+        }
         const payload = fr.payload;
         const path_val = c.JS_NewStringLen(ctx, entry.path[0..entry.path_len].ptr, entry.path_len);
         const payload_val = c.JS_NewStringLen(ctx, payload.ptr, payload.len);

@@ -1,0 +1,19 @@
+diff --git a/quickjs.c b/quickjs.c
+index 0e038cc..3628f9a 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -2680,11 +2680,13 @@ void JS_FreeRuntime(JSRuntime *rt)
+             p = list_entry(el, JSGCObjectHeader, link);
+             if (JS_REF_COUNT(p) != 0) {
+                 if (!header_done) {
+-                    printf("Object leaks:\n");
++                    fprintf(stderr, "Object leaks:\n");
++                    fflush(stderr);
+                     JS_DumpObjectHeader(rt);
+                     header_done = true;
+                 }
+                 JS_DumpGCObject(rt, p);
++                fflush(stderr);
+                 leak = true;
+             }
+         }

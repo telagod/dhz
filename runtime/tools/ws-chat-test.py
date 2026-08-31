@@ -73,7 +73,7 @@ def main():
             ws_send(s, json.dumps({ 'op': 'history', 'limit': 5 }))
         elif m.get('op') == 'history':
             last = (m.get('events') or [{}])[-1]
-            if last.get('type') == 'chat/assistant':
+            if last.get('type') == 'assistant/message':
                 print('assistant:', repr(last.get('text', '')[:200]))
                 print('WS-CHAT-E2E: PASS (%.1fs)' % (time.time() - t0))
                 return

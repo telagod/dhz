@@ -34,6 +34,7 @@ const ConnEntry = struct {
     fd: i32 = -1,
     used: bool = false,
     upgraded: bool = false,
+    sse: bool = false, // SSE 下行面（events.mux/host——写头后驻留，ssePush 供帧）
     buf: [16 * 1024]u8 = undefined,
     len: usize = 0,
     path: [256]u8 = undefined,
@@ -108,7 +109,35 @@ pub const serviceMethods = [_]hs.Method{
     .{ .name = "postAsync", .func = jsPostAsync, .length = 4 },
     .{ .name = "stop", .func = jsStop, .length = 0 },
     .{ .name = "push", .func = jsPush, .length = 1 },
+.{ .name = "ssePush", .func = jsSsePush, .length = 2 },
 };
+
+/// SSE 下行供帧：data: <payload>\n\n（events.mux/host——rc.2 SSE 面）
+fn jsSsePush(
+    ctx: ?*c.JSContext,
+    this_val: c.JSValueConst,
+    argc: c_int,
+    argv: [*c]const c.JSValueConst,
+) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 2) return c.JS_ThrowTypeError(ctx, "http.ssePush(connId, payload)", @as(c_int, 0));
+    var target: f64 = 0;
+    _ = c.JS_ToFloat64(ctx, &target, argv[0]);
+    var plen: usize = 0;
+    const p = c.JS_ToCStringLen(ctx, &plen, argv[1]) orelse return c.JS_ThrowTypeError(ctx, "payload must be string", @as(c_int, 0));
+    defer c.JS_FreeCString(ctx, p);
+    for (&g_conns) |*e| {
+        if (e.used and e.sse and e.conn_id == @as(usize, @intFromFloat(target))) {
+            var head_buf: [16]u8 = undefined;
+            const head = std.fmt.bufPrint(&head_buf, "data: ", .{}) catch return c.JS_NewInt64(ctx, 0);
+            _ = http_svc.c.dsh_sock_write(e.fd, head.ptr, head.len);
+            _ = http_svc.c.dsh_sock_write(e.fd, p, plen);
+            _ = http_svc.c.dsh_sock_write(e.fd, "\n\n", 2);
+            return c.JS_NewInt64(ctx, 1);
+        }
+    }
+    return c.JS_NewInt64(ctx, 0);
+}
 
 /// 升级连接广播（主动推送——session/event 订阅回调用）。
 fn jsPush(
@@ -314,6 +343,8 @@ fn addConn(fd: i32) bool {
             e.* = ConnEntry.empty();
             e.fd = fd;
             e.used = true;
+            e.conn_id = g_next_conn_id; // accept 即分配（GET 回调第三参/SSE 面要用）
+            g_next_conn_id += 1;
             return true;
         }
     }
@@ -409,7 +440,12 @@ fn serveConn(fd: i32) void {
         } else if (callbackForPath(req.path)) |cb| {
             var ct: []const u8 = "text/plain; charset=utf-8";
             var st: u16 = 200;
-            const body = callGuest(req, cb, &ct, &st);
+            var sse = false;
+            const body = callGuest(req, cb, &ct, &st, &sse, entry.conn_id);
+            if (sse) {
+                beginSse(entry);
+                return;
+            }
             out = .{ .status = st, .body = body, .content_type = ct };
         } else {
             out = .{ .status = 404, .body = "not found" };
@@ -765,7 +801,8 @@ fn handleConnection(conn: i32) bool {
     if (callbackForPath(req2.path)) |cb| {
         var ct: []const u8 = "text/plain; charset=utf-8";
         var st: u16 = 200;
-        const body = callGuest(req2, cb, &ct, &st);
+        var sse = false;
+        const body = callGuest(req2, cb, &ct, &st, &sse, 0);
         out = .{ .status = st, .body = body, .content_type = ct };
     } else {
         out = .{ .status = 404, .body = "not found" };
@@ -837,7 +874,8 @@ fn beginUpgrade(entry: *ConnEntry, req: http_svc.Request, cb: c.JSValue) void {
     entry.upgraded = true;
     var ct_ws: []const u8 = "text/plain; charset=utf-8";
     var st_ws: u16 = 200;
-    const accept = callGuest(req, cb, &ct_ws, &st_ws);
+    var sse_ws = false;
+    const accept = callGuest(req, cb, &ct_ws, &st_ws, &sse_ws, 0);
     const accept_val = if (std.mem.startsWith(u8, accept, "ws-accept:")) accept[10..] else accept;
     var hdr_buf: [256]u8 = undefined;
     const hdr = std.fmt.bufPrint(&hdr_buf, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n\r\n", .{accept_val}) catch {
@@ -859,6 +897,16 @@ fn beginUpgrade(entry: *ConnEntry, req: http_svc.Request, cb: c.JSValue) void {
     serveUpgraded(entry);
 }
 
+/// SSE 驻留化：写头（含 `: connected` 注释行——rc.2 sseResponse 同款）→ 标记升级，
+/// 之后由 ssePush 供 `data:` 帧；客户端不再上行（读即丢弃，EOF 清理——serveUpgraded sse 分支）。
+fn beginSse(entry: *ConnEntry) void {
+    entry.sse = true;
+    entry.upgraded = true;
+    entry.len = 0;
+    const head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n: connected\n\n";
+    _ = http_svc.c.dsh_sock_write(entry.fd, head, head.len);
+}
+
 fn serveUpgraded(entry: *ConnEntry) void {
     const fd = entry.fd;
     // 一次事件读一次（非阻塞 EAGAIN 即返回——事件驱动语义；客户端半帧等下次）
@@ -867,6 +915,12 @@ fn serveUpgraded(entry: *ConnEntry) void {
         return;
     }
     const n = http_svc.c.dsh_sock_read(fd, entry.buf[entry.len..].ptr, entry.buf.len - entry.len);
+    if (entry.sse) {
+        // SSE 驻留面：无上行语义——入站字节丢弃，EOF 清连接
+        if (n <= 0) removeConnLocked(fd);
+        entry.len = 0;
+        return;
+    }
     if (n > 0) {
         entry.len += @intCast(n);
     } else if (n == 0) {
@@ -950,7 +1004,7 @@ fn buildHeaders(ctx: ?*c.JSContext, raw: []const u8) c.JSValue {
     return obj;
 }
 
-fn callGuest(req: http_svc.Request, cb: c.JSValue, ct_out: *[]const u8, st_out: *u16) []const u8 {
+fn callGuest(req: http_svc.Request, cb: c.JSValue, ct_out: *[]const u8, st_out: *u16, sse_out: *bool, conn_id: usize) []const u8 {
     const ctx = g_req_ctx orelse return "no ctx";
     const path_val = c.JS_NewStringLen(ctx, req.path.ptr, req.path.len);
     if (c.JS_IsException(path_val)) return "bad path";
@@ -969,26 +1023,31 @@ fn callGuest(req: http_svc.Request, cb: c.JSValue, ct_out: *[]const u8, st_out: 
             c.JS_FreeValue(ctx, ex);
             return "handler error";
         }
-        return extractResponse(ctx, result, ct_out, st_out);
+        return extractResponse(ctx, result, ct_out, st_out, sse_out);
     }
-    const args = [_]c.JSValue{ path_val, hdr_val };
-    const result = c.JS_Call(ctx, cb, undefv, 2, @constCast(&args));
+    const conn_val = c.JS_NewInt64(ctx, @intCast(conn_id));
+    // 4 参形（path, headers, frame=undefined, connId）——与 WS 升级回调同构（第三参必须保持
+    // undefined，否则 WS handler 把 connId 当 frame；SSE/GET handler 从第四参取 connId）
+    const args = [_]c.JSValue{ path_val, hdr_val, undefv, conn_val };
+    const result = c.JS_Call(ctx, cb, undefv, 4, @constCast(&args));
     c.JS_FreeValue(ctx, path_val);
     c.JS_FreeValue(ctx, hdr_val);
+    c.JS_FreeValue(ctx, conn_val);
     if (c.JS_IsException(result)) {
         const ex = c.JS_GetException(ctx);
         c.JS_FreeValue(ctx, ex);
         return "handler error";
     }
-    return extractResponse(ctx, result, ct_out, st_out);
+    return extractResponse(ctx, result, ct_out, st_out, sse_out);
 }
 
 // 响应契约：handler 返回 string → text/plain/200（默认）；
 // 返回 { body, contentType?, encoding?: "base64", status? } → 自定义类型/二进制体/状态码。
 // 响应体/类型生命周期：写入模块级缓冲（单线程同步帧，writeResponse 立即消费）。
-fn extractResponse(ctx: ?*c.JSContext, result: c.JSValue, ct_out: *[]const u8, st_out: *u16) []const u8 {
+fn extractResponse(ctx: ?*c.JSContext, result: c.JSValue, ct_out: *[]const u8, st_out: *u16, sse_out: *bool) []const u8 {
     ct_out.* = "text/plain; charset=utf-8";
     st_out.* = 200;
+    sse_out.* = false;
     defer c.JS_FreeValue(ctx, result);
     var body_val = result;
     var is_b64 = false;
@@ -997,10 +1056,17 @@ fn extractResponse(ctx: ?*c.JSContext, result: c.JSValue, ct_out: *[]const u8, s
         const ctv = c.JS_GetPropertyStr(ctx, result, "contentType");
         const enc = c.JS_GetPropertyStr(ctx, result, "encoding");
         const stv = c.JS_GetPropertyStr(ctx, result, "status");
+        const ssev = c.JS_GetPropertyStr(ctx, result, "sse");
         defer c.JS_FreeValue(ctx, b);
         defer c.JS_FreeValue(ctx, ctv);
         defer c.JS_FreeValue(ctx, enc);
         defer c.JS_FreeValue(ctx, stv);
+        defer c.JS_FreeValue(ctx, ssev);
+        if (c.JS_IsBool(ssev)) {
+            var bv: c_int = 0;
+            _ = c.JS_ToInt32(ctx, &bv, ssev);
+            if (bv != 0) sse_out.* = true;
+        }
         body_val = b;
         if (c.JS_IsString(ctv)) {
             const cts = c.JS_ToCStringLen(ctx, null, ctv);

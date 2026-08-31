@@ -215,6 +215,42 @@ pub fn main(init: std.process.Init) !void {
     defer act.deinit();
     const act_ctx = act.host.ctx;
     defer http_stop(act_ctx); // 桥引用纪律：任何路径（含早期错误）都释放路由/连接回调
+    // —— 单实例预检：另一存活 boot-smoke/dsh-zig-runtime 进程存在时，本 boot 会在异步链上
+    //    停滞（共享 llm-mock 18099 与会话库——历史上反复误报 ScaleSessions，N 次踩坑）。
+    //    WAL 空闲窗口下 sqlite BEGIN IMMEDIATE 拦不住（已实测）——单实例的本质是进程，扫 /proc。
+    {
+        const self_pid = std.os.linux.getpid();
+        var proc_dir = std.Io.Dir.openDirAbsolute(init.io, "/proc", .{ .iterate = true }) catch null;
+        if (proc_dir) |*pd| {
+            defer pd.close(init.io);
+            var it = pd.iterate();
+            var offenders: usize = 0;
+            var first_offender: i32 = 0;
+            while (it.next(init.io) catch null) |ent| {
+                if (ent.kind != .directory) continue;
+                const ep = std.fmt.parseInt(i32, ent.name, 10) catch continue;
+                if (ep == self_pid) continue;
+                var cmd_buf: [256]u8 = undefined;
+                const cmd_path = std.fmt.bufPrintZ(&cmd_buf, "/proc/{d}/cmdline", .{ep}) catch continue;
+                var f = std.Io.Dir.cwd().openFile(init.io, cmd_path, .{}) catch continue;
+                defer f.close(init.io);
+                var cbuf: [256]u8 = undefined;
+                const cn = f.readPositionalAll(init.io, &cbuf, 0) catch 0;
+                const content = cbuf[0..cn]; // /proc 文件 st_size=0——readFileAlloc 直接回空（已实测）
+                // 精确形态：可执行文件路径（/boot-smoke 或 dsh-zig-runtime），排除构建命令行
+                // （zig build / build runner / 探测 shell 的 cmdline 含 "boot-smoke-run" 字样——曾致自锁）
+                const looks_runner = (std.mem.indexOf(u8, content, "/boot-smoke") != null or std.mem.indexOf(u8, content, "dsh-zig-runtime") != null) and std.mem.indexOf(u8, content, "boot-smoke-run") == null;
+                if (looks_runner) {
+                    offenders += 1;
+                    if (first_offender == 0) first_offender = ep;
+                }
+            }
+            if (offenders > 0) {
+                std.debug.print("boot preflight: 检测到 {d} 个存活运行时实例（首个 pid={d}）——单实例设计，并发 boot 必停滞。先停旧实例：dhz-web stop（或 kill {d}）\n", .{ offenders, first_offender, first_offender });
+                return error.InstanceAlreadyRunning;
+            }
+        }
+    }
     // —— LLM mock 自拉起（boot 依赖面：fetch/gwPost 断言——端口被占则用现有实例）
     const g_mock_pid = blk: {
         const mw = @cImport({ @cInclude("proc_wrap.h"); });

@@ -524,7 +524,7 @@ for (const row of merged.values()) {
 
 
           try { globalThis.dshServices.http.start(Number(globalThis.__dshWebPort) || 18086) } catch (e) { globalThis.__webStartErr = 'listen port ' + (Number(globalThis.__dshWebPort) || 18086) + ' failed: ' + String(e && e.message ? e.message : e).slice(0, 60) + '（端口被占？）' }
-          const __webPage = { body: '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>dsh web</title><style>body{font-family:system-ui;margin:24px;max-width:880px}#log{border:1px solid #ccc;border-radius:6px;padding:12px;height:52vh;overflow:auto;white-space:pre-wrap;font-size:13px;background:#fafafa}#row{display:flex;gap:8px;margin-top:10px}#in{flex:1;padding:8px;border:1px solid #ccc;border-radius:6px}button{padding:8px 16px}</style></head><body><h1>dsh web</h1><p>Zig 运行时 web 服务模式在线。活性：<span id="pp">…</span>　｜　完整 DSH GUI：<a href="http://127.0.0.1:3080">127.0.0.1:3080</a></p><div id="log">(载入中…)</div><div id="row"><input id="in" placeholder="继续说…（Enter 发送）"><button id="send">发送</button></div><script>var log=document.getElementById("log"),inp=document.getElementById("in");var ws=new WebSocket("ws://"+location.host+"/ws");function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")}function render(evs){var h="";for(var i=0;i<evs.length;i++){var e=evs[i];if(e.type==="chat/user")h+="\n【你】 "+esc(e.text)+"\n";else if(e.type==="chat/assistant")h+="\n【助手】 "+esc(e.text)+(e.toolCalls?"  🔧×"+e.toolCalls:"")+"\n";else if(e.type==="chat/tool-call")h+="  🔧 "+esc(e.name||"?")+" "+esc((e.text||"").slice(0,120))+"\n";else if(e.type==="chat/tool-result")h+="  ↩︎ "+esc((e.text||"").slice(0,200))+"\n"}log.innerHTML=h||"(空)";log.scrollTop=log.scrollHeight}ws.onopen=function(){ws.send(JSON.stringify({op:"subscribe",session:"chat"}));ws.send(JSON.stringify({op:"history",limit:300}))};ws.onmessage=function(ev){try{var m=JSON.parse(ev.data);if(m.op==="history")render(m.events);else if(m.op==="event"&&m.session==="chat")ws.send(JSON.stringify({op:"history",limit:300}));else if(m.op==="chat-reply"&&m.error)log.innerHTML+="\n[系统] "+esc(m.error)+"\n"}catch(x){}};function send(){var t=inp.value.trim();if(!t)return;inp.value="";ws.send(JSON.stringify({op:"chat-send",session:"chat",text:t}))}document.getElementById("send").onclick=send;inp.onkeydown=function(e){if(e.key==="Enter")send()};fetch("/ping").then(function(r){return r.text()}).then(function(t){document.getElementById("pp").textContent=t})</script></body></html>', contentType: 'text/html; charset=utf-8' }
+          const __webPage = { body: '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>dsh web</title><style>body{font-family:system-ui;margin:24px;max-width:880px}#log{border:1px solid #ccc;border-radius:6px;padding:12px;height:52vh;overflow:auto;white-space:pre-wrap;font-size:13px;background:#fafafa}#row{display:flex;gap:8px;margin-top:10px}#in{flex:1;padding:8px;border:1px solid #ccc;border-radius:6px}button{padding:8px 16px}</style></head><body><h1>dsh web</h1><p>Zig 运行时 web 服务模式在线。活性：<span id="pp">…</span>　｜　完整 DSH GUI：<a href="http://127.0.0.1:3080">127.0.0.1:3080</a></p><div id="log">(载入中…)</div><div id="row"><input id="in" placeholder="继续说…（Enter 发送）"><button id="send">发送</button></div><script>var log=document.getElementById("log"),inp=document.getElementById("in");var ws=new WebSocket("ws://"+location.host+"/ws");function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")}function render(evs){var h="";for(var i=0;i<evs.length;i++){var e=evs[i];if(e.type==="user/message")h+="\n【你】 "+esc(e.text)+"\n";else if(e.type==="assistant/message")h+="\n【助手】 "+esc(e.text)+"\n";else if(e.type==="tool/call")h+="  🔧 "+esc(e.name||"?")+" "+esc((e.text||"").slice(0,120))+"\n";else if(e.type==="tool/result")h+="  ↩︎ "+esc((e.text||"").slice(0,200))+"\n"}log.innerHTML=h||"(空)";log.scrollTop=log.scrollHeight}ws.onopen=function(){ws.send(JSON.stringify({op:"subscribe",session:"chat"}));ws.send(JSON.stringify({op:"history",limit:300}))};ws.onmessage=function(ev){try{var m=JSON.parse(ev.data);if(m.op==="history")render(m.events);else if(m.op==="event"&&m.session==="chat")ws.send(JSON.stringify({op:"history",limit:300}));else if(m.op==="chat-reply"&&m.error)log.innerHTML+="\n[系统] "+esc(m.error)+"\n"}catch(x){}};function send(){var t=inp.value.trim();if(!t)return;inp.value="";ws.send(JSON.stringify({op:"chat-send",session:"chat",text:t}))}document.getElementById("send").onclick=send;inp.onkeydown=function(e){if(e.key==="Enter")send()};fetch("/ping").then(function(r){return r.text()}).then(function(t){document.getElementById("pp").textContent=t})</script></body></html>', contentType: 'text/html; charset=utf-8' }
           globalThis.dshServices.http.handle('/index.html', (p) => { globalThis.__webRoot = 'hit'; return __webPage })
           globalThis.dshServices.http.handle('/panel', (p) => __webPage)
 
@@ -553,32 +553,97 @@ for (const row of merged.values()) {
             globalThis.dshServices.http.handle('/favicon.svg', serveStatic)
             globalThis.dshServices.http.handle('/manifest.webmanifest', serveStatic)
           } catch (e) { globalThis.__shellErr = String(e).slice(0, 90) }
-          // —— rc.2 网关面（Phase C 存根：mux 握手 + subscribed 帧回放；host 静默上行）
+          // —— rc.2 网关面：SSE 下行（mux=会话域 / host=宿主域）+ unary POST（/api/<method> 全形 RPC）
           globalThis.__muxConns = {}
-          const __wsAccept = (h) => {
-            const key = String((h && h['sec-websocket-key']) || '')
-            const sha = globalThis.dshServices.crypto.sha1(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
-            let bin = ''
-            for (let i = 0; i < sha.length; i += 2) bin += String.fromCharCode(parseInt(sha.slice(i, i + 2), 16))
-            return 'ws-accept:' + globalThis.btoa(bin)
-          }
-          globalThis.dshServices.http.handle('/api/events.mux', (p, h, frame, connId) => {
-            if (frame !== undefined) { globalThis.__muxLastFrame = String(frame).slice(0, 200); return undefined }
+          globalThis.__hostConns = {}
+          const __sseFrame = (payload) => JSON.stringify({ type: 'server-request', rpcId: globalThis.crypto.randomUUID(), method: payload.type, payload: payload })
+          const __sseBroadcast = (table, payload) => { for (const id in table) { try { globalThis.dshServices.http.ssePush(Number(id), __sseFrame(payload)) } catch (e) {} } }
+          globalThis.dshServices.http.handle('/api/events.mux', (p, h, _f, connId) => {
             globalThis.__muxConns[connId] = true
             setTimeout(() => {
               try {
                 for (const s of c.sessions.list()) {
                   const evs = s.log || []
-                  globalThis.dshServices.http.push(JSON.stringify({ type: 'server-request', rpcId: globalThis.crypto.randomUUID(), method: 'session/subscribed', payload: { type: 'session/subscribed', sessionId: s.id, lastSeq: evs.length ? (evs[evs.length - 1].seq ?? evs.length) : 0 } }), connId)
+                  globalThis.dshServices.http.ssePush(connId, __sseFrame({ type: 'session/subscribed', sessionId: s.id, lastSeq: evs.length ? (evs[evs.length - 1].seq ?? evs.length) : 0 }))
                 }
               } catch (e) {}
-            }, 60)
-            return __wsAccept(h)
-          }, true)
-          globalThis.dshServices.http.handle('/api/events.host', (p, h, frame, connId) => {
-            if (frame !== undefined) { globalThis.__hostLastFrame = String(frame).slice(0, 200); return undefined }
-            return __wsAccept(h)
-          }, true)
+            }, 30)
+            return { sse: true }
+          })
+          globalThis.dshServices.http.handle('/api/events.host', (p, h, _f, connId) => {
+            globalThis.__hostConns[connId] = true
+            return { sse: true }
+          })
+          if (!globalThis.__muxWired) {
+            globalThis.__muxWired = true
+            try {
+              c.on('session/event', (sess, ev) => { __sseBroadcast(globalThis.__muxConns, { type: 'session/event', sessionId: sess && sess.id, event: ev }) })
+              c.on('session/created', (sess) => { __sseBroadcast(globalThis.__muxConns, { type: 'session/subscribed', sessionId: sess && sess.id, lastSeq: 0 }) })
+            } catch (e) { globalThis.__muxWireErr = String(e).slice(0, 60) }
+          }
+          const __unaryOk = (rpcId, value) => JSON.stringify({ rpcId: rpcId, result: { ok: true, value: value } })
+          const __unaryErr = (rpcId, code, msg) => JSON.stringify({ rpcId: rpcId, result: { ok: false, error: { code: code, message: msg, details: {} } } })
+          const __jsonResp = (body, status) => ({ body: body, contentType: 'application/json; charset=utf-8', ...(status ? { status: status } : {}) })
+          const __sessionSummary = (s) => {
+            const evs = s.log || []
+            const last = evs.length ? evs[evs.length - 1] : null
+            return { sessionId: s.id, updatedAt: (last && last.time) || 0, running: false, blank: evs.length === 0, cwd: '/home/dapao/proj/dhz' }
+          }
+          globalThis.dshServices.http.handle('/api/', (p, h, body, connId) => {
+            if (typeof body !== 'string') return __jsonResp(__unaryErr('', 'bad-request', 'GET not supported on unary path'), 405)
+            const q = p.indexOf('?'); const path = q >= 0 ? p.slice(0, q) : p
+            const method = path.slice('/api/'.length)
+            let msg = null
+            try { msg = JSON.parse(body || '{}') } catch (e) { return __jsonResp(__unaryErr('', 'bad-request', 'invalid json'), 400) }
+            const rpcId = (msg && msg.rpcId) || ''
+            globalThis.__unaryLast = method
+            try {
+              if (method === 'session.list') {
+                return __jsonResp(__unaryOk(rpcId, { items: c.sessions.list().map(__sessionSummary) }))
+              }
+              if (method === 'session.history') {
+                const pl = (msg && msg.payload) || {}
+                const sess = c.sessions.get(pl.sessionId)
+                const evs = sess ? (sess.log || []) : []
+                const lim = Math.min(1000, Math.max(1, pl.limit || 500))
+                const cut = evs.slice(-lim).map((e) => ({ event: { type: e.type, seq: e.seq, time: e.time || 0, data: e.data, ...(e.surfaceOp !== undefined ? { surfaceOp: e.surfaceOp } : {}) } }))
+                return __jsonResp(__unaryOk(rpcId, { events: cut, hasMore: evs.length > lim }))
+              }
+              // —— GUI 启动必需面（schema 对齐 rc.2 apiproxy；provider/model 取真渠道注入）
+              const __rcfg = globalThis.__dshLlmReal ? JSON.parse(globalThis.__dshLlmReal) : { provider: 'mock', model: 'mock-model' }
+              const __modelGroups = [{ id: __rcfg.provider, name: __rcfg.provider, models: [{ id: __rcfg.model, name: __rcfg.model }, { id: 'kimi-k3', name: 'kimi-k3' }, { id: 'glm-5.3', name: 'glm-5.3' }, { id: 'grok-4.6', name: 'grok-4.6' }, { id: 'deepseek-v4-flash-vision-exp', name: 'deepseek-v4-flash-vision-exp' }] }]
+              if (method === 'host.describe') {
+                return __jsonResp(__unaryOk(rpcId, { version: '0.1.1-rc.2+dhz', cwd: '/home/dapao/proj/dhz', provider: __rcfg.provider, model: __rcfg.model, attachedSessions: c.sessions.list().length, home: (globalThis.process && process.env && process.env.DSH_HOME) || '/home/dapao/.dsh', canOpenPath: false }))
+              }
+              if (method === 'workspace.list') {
+                const now = new Date().toISOString()
+                return __jsonResp(__unaryOk(rpcId, { items: [{ workspaceId: 'ws-dhz', path: '/home/dapao/proj/dhz', title: 'dhz', sessionIds: c.sessions.list().map((s) => s.id), createdAt: now, updatedAt: now }], archivedSessionIds: [] }))
+              }
+              if (method === 'settings.describe') {
+                return __jsonResp(__unaryOk(rpcId, { writable: false, hasDocument: false, namespaces: [] }))
+              }
+              if (method === 'llm.providers') {
+                return __jsonResp(__unaryOk(rpcId, { providers: [{ provider: __rcfg.provider, displayName: 'A6API ', settingsNs: 'llm-pi-ai', settingsPath: ['llm-pi-ai', 'providers', __rcfg.provider], active: true, declared: true }] }))
+              }
+              if (method === 'llm.models') {
+                return __jsonResp(__unaryOk(rpcId, { groups: __modelGroups, failures: [] }))
+              }
+              if (method === 'session.models') {
+                return __jsonResp(__unaryOk(rpcId, { current: { provider: __rcfg.provider, model: __rcfg.model }, routable: false, groups: __modelGroups, failures: [] }))
+              }
+              if (method === 'agentPreset.list') {
+                return __jsonResp(__unaryOk(rpcId, { presets: [{ id: 'code', trust: 'system', isDefault: true, name: 'code' }], authorable: false, hasDocument: false }))
+              }
+              if (method === 'skill.list') {
+                return __jsonResp(__unaryOk(rpcId, { skills: [] }))
+              }
+              globalThis.__unaryMiss = (globalThis.__unaryMiss || []).concat(method).slice(-20)
+              return __jsonResp(__unaryErr(rpcId, 'unimplemented', 'method not implemented: ' + method), 501)
+            } catch (e) {
+              return __jsonResp(__unaryErr(rpcId, 'internal', String(e).slice(0, 120)), 500)
+            }
+          }, false)
+          globalThis.dshServices.http.handle('/debug/gateway', (p) => ({ body: JSON.stringify({ unaryLast: globalThis.__unaryLast || null, unaryMiss: globalThis.__unaryMiss || [], shellFiles: globalThis.__shellFiles || 0, shellSkip: globalThis.__shellSkip || 0, shellErr: globalThis.__shellErr || null, chatImport: globalThis.__chatImport || null, chatErr: globalThis.__chatErr || null, muxConns: Object.keys(globalThis.__muxConns || {}).length }), contentType: 'application/json; charset=utf-8' }))
           globalThis.dshServices.http.handle('/ping', (p) => 'pong:' + p)
           globalThis.dshServices.http.handle('/post-echo', (p, h, body) => { try { globalThis.__gwPostBody = String(body); const m = JSON.parse(body || ''); return 'post:' + (m && m.echo ? m.echo : '?') } catch (e) { return 'post:bad:' + String(e).slice(0, 40) } })
           globalThis.dshServices.http.handle('/post-echo', (p, h, body) => { try { const m = JSON.parse(body || ''); return 'post:' + (m && m.echo ? m.echo : '?') } catch (e) { return 'post:bad' } })
@@ -656,7 +721,12 @@ for (const row of merged.values()) {
                     const lim = Math.min(500, Math.max(1, msg.limit || 200))
                     const cut = evs.slice(-lim).map((e) => {
                       const d = e.data || {}
-                      const text = d.text || d.args || ''
+                      let text = ''
+                      if (e.type === 'user/message') text = ((d.content || [])[0] || {}).text || ''
+                      else if (e.type === 'assistant/message') { const ps = ((d.message || {}).content) || []; text = ps.filter((x) => x && x.type === 'text').map((x) => x.text || '').join('\n') }
+                      else if (e.type === 'tool/call') text = String(d.arguments || '').slice(0, 120)
+                      else if (e.type === 'tool/result') { const ps = ((((d.message || {}).content) || [])[0] || {}).content || []; text = (ps[0] || {}).text || '' }
+                      else text = d.text || ''
                       return { type: e.type, text: String(text).slice(0, 600), name: d.name, toolCalls: d.toolCalls }
                     })
                     return JSON.stringify({ op: 'history', total: evs.length, events: cut })
@@ -668,7 +738,7 @@ for (const row of merged.values()) {
                   if (!text) return '{"op":"chat-reply","error":"empty"}'
                   const sess = c.sessions.get('chat')
                   const st = globalThis.__chatState
-                  sess.append('chat/user', { text: text })
+                  sess.append('user/message', { content: [{ type: 'text', text: text }], role: 'user', source: { kind: 'chat' } }, { surfaceOp: 'append' })
                   st.msgs.push({ role: 'user', content: text })
                   ;(async () => {
                     try {
@@ -679,8 +749,8 @@ for (const row of merged.values()) {
                       const tb = ba.blocks().find((b) => b.type === 'text')
                       const reply = tb && tb.text ? String(tb.text) : '(空回复)'
                       st.msgs.push({ role: 'assistant', content: reply })
-                      sess.append('chat/assistant', { text: reply })
-                    } catch (e) { sess.append('chat/assistant', { text: '(错误) ' + String(e && e.message ? e.message : e).slice(0, 160) }) }
+                      sess.append('assistant/message', { turn: 0, step: 0, message: { role: 'assistant', content: [{ type: 'text', text: reply }] } }, { surfaceOp: 'append' })
+                    } catch (e) { sess.append('assistant/message', { turn: 0, step: 0, message: { role: 'assistant', content: [{ type: 'text', text: '(错误) ' + String(e && e.message ? e.message : e).slice(0, 160) }] } }, { surfaceOp: 'append' }) }
                   })()
                   return JSON.stringify({ op: 'chat-reply', status: 'sent' })
                 }
@@ -703,11 +773,14 @@ for (const row of merged.values()) {
                 try {
                   const raw = await c.fs.readText({ displayPath: rcfg.importPath, targetKey: rcfg.importPath })
                   const imp = JSON.parse(typeof raw === 'string' ? raw : String(raw))
+                  // 真实 dsh 事件类型落库（GUI 原生渲染面；surface 三型带 append 标记——契约）
+                  let impN = 0
                   for (const ev of (imp.events || [])) {
-                    if (ev.type === 'user') sess.append('chat/user', { text: ev.text || '' })
-                    else if (ev.type === 'assistant') sess.append('chat/assistant', { text: ev.text || '', toolCalls: ev.toolCalls || 0 })
-                    else if (ev.type === 'tool-call') sess.append('chat/tool-call', { name: ev.name || '?', args: ev.args || '' })
-                    else if (ev.type === 'tool-result') sess.append('chat/tool-result', { text: ev.text || '' })
+                    impN += 1
+                    if (ev.type === 'user') sess.append('user/message', { content: [{ type: 'text', text: ev.text }], role: 'user', source: { kind: 'user' } }, { surfaceOp: 'append' })
+                    else if (ev.type === 'assistant') sess.append('assistant/message', { turn: 0, step: 0, message: { role: 'assistant', content: ev.text ? [{ type: 'text', text: ev.text }] : [] } }, { surfaceOp: 'append' })
+                    else if (ev.type === 'tool-call') sess.append('tool/call', { turn: 0, step: 0, callId: ev.callId || ('import-' + impN), name: ev.name || '?', arguments: ev.args || '{}' })
+                    else if (ev.type === 'tool-result') sess.append('tool/result', { turn: 0, step: 0, message: { source: { kind: 'tool', callId: ev.toolCallId || ('import-' + impN) }, content: [{ type: 'tool-result', toolCallId: ev.toolCallId || ('import-' + impN), content: [{ type: 'text', text: ev.text || '' }] }] } }, { surfaceOp: 'append' })
                   }
                   for (const m of (imp.messages || [])) st0.msgs.push({ role: m.role, content: m.content })
                   globalThis.__chatImport = 'ok:' + (imp.events || []).length + '/' + st0.msgs.length

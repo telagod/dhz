@@ -39,11 +39,14 @@ def main():
             if txt or ntc: events.append({ 'type': 'assistant', 'text': txt, 'toolCalls': ntc, 'time': j.get('time') })
         elif t == 'tool/call':
             args = str(d.get('arguments') or '')[:160]
-            events.append({ 'type': 'tool-call', 'name': d.get('name'), 'args': args, 'time': j.get('time') })
+            events.append({ 'type': 'tool-call', 'name': d.get('name'), 'args': args, 'callId': d.get('callId'), 'time': j.get('time') })
         elif t == 'tool/result':
             m = d.get('message') or {}
             txt = text_of(m.get('content'))[:400]
-            events.append({ 'type': 'tool-result', 'text': txt, 'time': j.get('time') })
+            tcid = None
+            for p in (m.get('content') or []):
+                if isinstance(p, dict) and p.get('toolCallId'): tcid = p['toolCallId']; break
+            events.append({ 'type': 'tool-result', 'text': txt, 'toolCallId': tcid, 'time': j.get('time') })
     # 展示轨 = 末尾 tail 条；上下文轨取 8×tail 窗口（自主长链单轮数百工具事件——
     # 2×tail 窗口实测仍会全 assistant，归一化 pop 光变 0 条；8× 后稳定覆盖最近 user 轮）
     ctx_events = events[-(tail * 8):]

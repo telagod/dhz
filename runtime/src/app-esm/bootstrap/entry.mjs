@@ -97,8 +97,9 @@ function createMockLlmAdapter(base) {
         }
       }, () => { doneResolve() })
       await donePromise
-      const index = 0
-      let started = false
+      let tIdx = -1
+      let rIdx = -1
+      let racc = ''
       let acc = ''
       const toolState = new Map()
       for (const data of dataLines) {
@@ -124,17 +125,29 @@ function createMockLlmAdapter(base) {
           }
           continue
         }
+        // reasoning 面（glm 系 reasoning_content 前置流；mock 无此字段——golden 路径不变）
+        const rc = delta.reasoning_content
+        if (rc) {
+          if (rIdx < 0) {
+            rIdx = 0
+            yield { type: 'block-start', index: 0, blockType: 'reasoning' }
+          }
+          racc += rc
+          yield { type: 'reasoning-delta', index: 0, text: rc }
+        }
         const c = delta.content
         if (c) {
-          if (!started) {
-            yield { type: 'block-start', index, blockType: 'text' }
-            started = true
+          if (tIdx < 0) {
+            if (rIdx >= 0) yield { type: 'block-end', index: 0, block: { type: 'reasoning', text: racc } }
+            tIdx = (rIdx >= 0 ? 1 : 0)
+            yield { type: 'block-start', index: tIdx, blockType: 'text' }
           }
           acc += c
-          yield { type: 'text-delta', index, text: c }
+          yield { type: 'text-delta', index: tIdx, text: c }
         }
       }
-      if (started) yield { type: 'block-end', index, block: { type: 'text', text: acc } }
+      if (tIdx >= 0) yield { type: 'block-end', index: tIdx, block: { type: 'text', text: acc } }
+      if (rIdx >= 0 && tIdx < 0) yield { type: 'block-end', index: 0, block: { type: 'reasoning', text: racc } }
       for (const entry of toolState) {
         const i = entry[0]
         const st = entry[1]
@@ -658,7 +671,7 @@ for (const row of merged.values()) {
                   try {
                     const ba = new st.llmMod.BlockAssembler()
                     for await (const ch of st.adapter._stream({ model: st.rcfg.model, messages: st.msgs, toolMode: true })) {
-                      if (ch && (ch.type === 'block-start' || ch.type === 'text-delta' || ch.type === 'block-end')) sess.append('assistant/chunk', { turn: turn, step: step, chunk: ch })
+                      if (ch && (ch.type === 'block-start' || ch.type === 'text-delta' || ch.type === 'reasoning-delta' || ch.type === 'block-end')) sess.append('assistant/chunk', { turn: turn, step: step, chunk: ch })
                       ba.push(ch)
                     }
                     const tb = ba.blocks().find((b) => b.type === 'text')
@@ -673,6 +686,12 @@ for (const row of merged.values()) {
                   }
                 })()
                 return __jsonResp(__unaryOk(rpcId, { accepted: true }))
+              }
+              if (method === 'session.create') {
+                const pl2 = (msg && msg.payload) || {}
+                const sid = pl2.sessionId || ('session-' + globalThis.crypto.randomUUID())
+                c.sessions.create(sid, { seed: [], meta: { cwd: pl2.cwd || '/home/dapao/proj/dhz' } })
+                return __jsonResp(__unaryOk(rpcId, { sessionId: sid, ...(pl2.agentPreset ? { agentPreset: pl2.agentPreset } : {}) }))
               }
               if (method === 'session.cancel') {
                 return __jsonResp(__unaryOk(rpcId, { accepted: true }))

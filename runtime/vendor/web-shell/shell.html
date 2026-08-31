@@ -1,6 +1,9 @@
 <!doctype html>
 <html lang="en">
-  <head><script>(()=>{
+  <head><script>(function(){var q=[];function rep(t){try{fetch('/debug/report',{method:'POST',body:String(t).slice(0,400)}).catch(function(){})}catch(e){}}
+window.addEventListener('error',function(e){rep('ONERROR: '+(e.message||'?')+' @'+(e.filename||'')+':'+(e.lineno||0)+' '+(e.error&&e.error.stack?String(e.error.stack).slice(0,200):''))});
+window.addEventListener('unhandledrejection',function(e){rep('REJECT: '+String(e.reason&&e.reason.message||e.reason).slice(0,300))});
+var oe=console.error;console.error=function(){var a=[].slice.call(arguments).map(function(x){return String(x&&x.message||x).slice(0,250)}).join(' | ');rep('CONSOLE: '+a);oe.apply(console,arguments)};})();</script><script>(()=>{
 const pendingQueue=[]
 window.__ModuleLoader__={
   mode:"queue",

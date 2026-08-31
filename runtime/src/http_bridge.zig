@@ -15,7 +15,7 @@ const trust_fence = @import("trust_fence.zig");
 
 pub const c = @import("engine_c.zig").c;
 
-const MAX_ROUTES = 16;
+const MAX_ROUTES = 32; // web-shell 静态面 + 网关协议面 + 面板/调试——16 曾静默溢出挤掉 /ws（404 实锤）
 
 const GuestRoute = struct {
     path: []u8, // 生命周期由本模块持有（page_allocator）
@@ -352,6 +352,14 @@ fn addConn(fd: i32) bool {
 }
 
 fn removeConnLocked(fd: i32) void {
+    if (std.c.getenv("DSH_HTTP_TRACE") != null and fd != g_listen_fd) {
+        for (&g_conns) |*e2| {
+            if (e2.used and e2.fd == fd) {
+                std.debug.print("[http] conn closed fd={d} id={d} ws={} sse={}\n", .{ fd, e2.conn_id, e2.upgraded, e2.sse });
+                break;
+            }
+        }
+    }
     if (fd == g_listen_fd and std.c.getenv("DSH_HTTP_TRACE") != null) std.debug.print("[http] BUG: conn-remove hit listen fd={d}\n", .{fd});
     for (&g_conns) |*e| {
         if (e.used and e.fd == fd) {
@@ -425,6 +433,7 @@ fn serveConn(fd: i32) void {
         const origin = headerValue(req.headers, "origin");
         const upgrade_h = headerValue(req.headers, "upgrade");
         const is_upgrade = std.mem.eql(u8, req.method, "GET") and upgrade_h != null and std.mem.indexOf(u8, upgrade_h.?, "websocket") != null;
+        if (std.c.getenv("DSH_HTTP_TRACE") != null) std.debug.print("[http-req] {s} {s} sfs={s} origin={s} upg={s}\n", .{ req.method, req.path, sfs orelse "-", origin orelse "-", if (is_upgrade) "ws" else "-" });
         if (is_upgrade and trust_fence.isTrustedApiRequest(host_h, sfs, origin, &.{})) {
             if (callbackForPath(req.path)) |cb| {
                 // 消费升级请求帧（帧通道从字节 0 起）
@@ -443,10 +452,12 @@ fn serveConn(fd: i32) void {
             var sse = false;
             const body = callGuest(req, cb, &ct, &st, &sse, entry.conn_id);
             if (sse) {
+                if (std.c.getenv("DSH_HTTP_TRACE") != null) std.debug.print("[http-req] {s} {s} -> SSE conn={d}\n", .{ req.method, req.path, entry.conn_id });
                 beginSse(entry);
                 return;
             }
             out = .{ .status = st, .body = body, .content_type = ct };
+            if (std.c.getenv("DSH_HTTP_TRACE") != null) std.debug.print("[http] {s} {s} -> {d} ({d}B)\n", .{ req.method, req.path, st, body.len });
         } else {
             out = .{ .status = 404, .body = "not found" };
         }
@@ -875,7 +886,7 @@ fn beginUpgrade(entry: *ConnEntry, req: http_svc.Request, cb: c.JSValue) void {
     var ct_ws: []const u8 = "text/plain; charset=utf-8";
     var st_ws: u16 = 200;
     var sse_ws = false;
-    const accept = callGuest(req, cb, &ct_ws, &st_ws, &sse_ws, 0);
+    const accept = callGuest(req, cb, &ct_ws, &st_ws, &sse_ws, entry.conn_id);
     const accept_val = if (std.mem.startsWith(u8, accept, "ws-accept:")) accept[10..] else accept;
     var hdr_buf: [256]u8 = undefined;
     const hdr = std.fmt.bufPrint(&hdr_buf, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n\r\n", .{accept_val}) catch {
@@ -892,8 +903,8 @@ fn beginUpgrade(entry: *ConnEntry, req: http_svc.Request, cb: c.JSValue) void {
         return;
     }
     entry.cb = c.JS_DupValue(g_req_ctx, cb);
-    entry.conn_id = g_next_conn_id;
-    g_next_conn_id += 1;
+    // conn_id 已在 accept 时分配（GET 回调第四参即此 id）——此处不得重分，
+    // 否则 guest 存的旧 id 与 entry 新 id 永不匹配（push 静默丢帧——mux WS 实锤）
     serveUpgraded(entry);
 }
 

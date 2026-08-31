@@ -563,15 +563,46 @@ for (const row of merged.values()) {
             }
             globalThis.dshServices.http.handle('/assets/', serveStatic, false)
             globalThis.dshServices.http.handle('/plugins/', serveStatic, false)
+            globalThis.dshServices.http.handle('/dsh-whale/', serveStatic, false)
             globalThis.dshServices.http.handle('/favicon.svg', serveStatic)
             globalThis.dshServices.http.handle('/manifest.webmanifest', serveStatic)
           } catch (e) { globalThis.__shellErr = String(e).slice(0, 90) }
           // —— rc.2 网关面：SSE 下行（mux=会话域 / host=宿主域）+ unary POST（/api/<method> 全形 RPC）
           globalThis.__muxConns = {}
           globalThis.__hostConns = {}
+          globalThis.__muxWs = {}
+          globalThis.__hostWs = {}
           const __sseFrame = (payload) => JSON.stringify({ type: 'server-request', rpcId: globalThis.crypto.randomUUID(), method: payload.type, payload: payload })
           const __sseBroadcast = (table, payload) => { for (const id in table) { try { globalThis.dshServices.http.ssePush(Number(id), __sseFrame(payload)) } catch (e) {} } }
-          globalThis.dshServices.http.handle('/api/events.mux', (p, h, _f, connId) => {
+          const __wsBroadcast = (table, payload) => { for (const id in table) { try { globalThis.dshServices.http.push(__sseFrame(payload), Number(id)) } catch (e) {} } }
+          const __muxBroadcast = (payload) => { __sseBroadcast(globalThis.__muxConns, payload); __wsBroadcast(globalThis.__muxWs, payload) }
+          // 双传输：浏览器 WebApiClient 走 WS 下行（同路径 Upgrade），Node/SSE 客户端走 text/event-stream。
+          // 只回 SSE 时浏览器 WS 握手拿 200 即断——连接重试环的根因。
+          const __wsAccept = (h) => {
+            const key = String((h && h['sec-websocket-key']) || '')
+            const sha = globalThis.dshServices.crypto.sha1(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+            let bin = ''
+            for (let i = 0; i < sha.length; i += 2) bin += String.fromCharCode(parseInt(sha.slice(i, i + 2), 16))
+            return 'ws-accept:' + globalThis.btoa(bin)
+          }
+          globalThis.dshServices.http.handle('/api/events.mux', (p, h, frame, connId) => {
+            if (frame !== undefined) { globalThis.__muxWsInFrame = String(frame).slice(0, 120); return undefined } // 下行 only——关闭帧诊断留痕
+            const isWs = h && h['sec-websocket-key']
+            if (isWs) {
+              globalThis.__muxWs[connId] = true
+              globalThis.__muxWsId = connId
+              setTimeout(() => {
+                try {
+                  let n = 0
+                  for (const s of c.sessions.list()) {
+                    const evs = s.log || []
+                    n += globalThis.dshServices.http.push(__sseFrame({ type: 'session/subscribed', sessionId: s.id, lastSeq: evs.length ? (evs[evs.length - 1].seq ?? evs.length) : 0 }), connId)
+                  }
+                  globalThis.__muxPushRet = n
+                } catch (e) { globalThis.__muxPushRet = 'err:' + String(e).slice(0, 60) }
+              }, 30)
+              return __wsAccept(h)
+            }
             globalThis.__muxConns[connId] = true
             setTimeout(() => {
               try {
@@ -583,15 +614,18 @@ for (const row of merged.values()) {
             }, 30)
             return { sse: true }
           })
-          globalThis.dshServices.http.handle('/api/events.host', (p, h, _f, connId) => {
+          globalThis.dshServices.http.handle('/api/events.host', (p, h, frame, connId) => {
+            if (frame !== undefined) return undefined
+            const isWs = h && h['sec-websocket-key']
+            if (isWs) { globalThis.__hostWs[connId] = true; return __wsAccept(h) }
             globalThis.__hostConns[connId] = true
             return { sse: true }
           })
           if (!globalThis.__muxWired) {
             globalThis.__muxWired = true
             try {
-              c.on('session/event', (sess, ev) => { __sseBroadcast(globalThis.__muxConns, { type: 'session/event', sessionId: sess && sess.id, event: ev }) })
-              c.on('session/created', (sess) => { __sseBroadcast(globalThis.__muxConns, { type: 'session/subscribed', sessionId: sess && sess.id, lastSeq: 0 }) })
+              c.on('session/event', (sess, ev) => { __muxBroadcast({ type: 'session/event', sessionId: sess && sess.id, event: ev }) })
+              c.on('session/created', (sess) => { __muxBroadcast({ type: 'session/subscribed', sessionId: sess && sess.id, lastSeq: 0 }) })
             } catch (e) { globalThis.__muxWireErr = String(e).slice(0, 60) }
           }
           const __unaryOk = (rpcId, value) => JSON.stringify({ rpcId: rpcId, result: { ok: true, value: value } })
@@ -702,7 +736,11 @@ for (const row of merged.values()) {
               return __jsonResp(__unaryErr(rpcId, 'internal', String(e).slice(0, 120)), 500)
             }
           }, false)
-          globalThis.dshServices.http.handle('/debug/gateway', (p) => ({ body: JSON.stringify({ unaryLast: globalThis.__unaryLast || null, unaryMiss: globalThis.__unaryMiss || [], shellFiles: globalThis.__shellFiles || 0, shellSkip: globalThis.__shellSkip || 0, shellErr: globalThis.__shellErr || null, chatImport: globalThis.__chatImport || null, chatErr: globalThis.__chatErr || null, muxConns: Object.keys(globalThis.__muxConns || {}).length }), contentType: 'application/json; charset=utf-8' }))
+          globalThis.dshServices.http.handle('/debug/gateway', (p) => ({ body: JSON.stringify({ unaryLast: globalThis.__unaryLast || null, unaryMiss: globalThis.__unaryMiss || [], shellFiles: globalThis.__shellFiles || 0, shellSkip: globalThis.__shellSkip || 0, shellErr: globalThis.__shellErr || null, chatImport: globalThis.__chatImport || null, chatErr: globalThis.__chatErr || null, muxConns: Object.keys(globalThis.__muxConns || {}).length, muxWs: Object.keys(globalThis.__muxWs || {}).length, hostWs: Object.keys(globalThis.__hostWs || {}).length, muxWsId: globalThis.__muxWsId, muxPushRet: globalThis.__muxPushRet, muxWsInFrame: globalThis.__muxWsInFrame, reports: (globalThis.__dbgReports || []).slice(-12) }), contentType: 'application/json; charset=utf-8' }))
+          globalThis.dshServices.http.handle('/debug/report', (p, h, body) => {
+            try { globalThis.__dbgReports = (globalThis.__dbgReports || []).concat(String(body || '').slice(0, 400)).slice(-40) } catch (e) {}
+            return 'ok'
+          })
           globalThis.dshServices.http.handle('/ping', (p) => 'pong:' + p)
           globalThis.dshServices.http.handle('/post-echo', (p, h, body) => { try { globalThis.__gwPostBody = String(body); const m = JSON.parse(body || ''); return 'post:' + (m && m.echo ? m.echo : '?') } catch (e) { return 'post:bad:' + String(e).slice(0, 40) } })
           globalThis.dshServices.http.handle('/post-echo', (p, h, body) => { try { const m = JSON.parse(body || ''); return 'post:' + (m && m.echo ? m.echo : '?') } catch (e) { return 'post:bad' } })

@@ -1,0 +1,1 @@
+import __dshDefault from './lib/index.js'; export default __dshDefault; export * from './lib/index.js';

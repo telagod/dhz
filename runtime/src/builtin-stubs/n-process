@@ -1,0 +1,1 @@
+export const versions = { node: '0.0.0-embedded', dsh: '0.0.0-zig' }; export const platform = 'linux'; export const env = {}; export function cwd() { return '/'; }

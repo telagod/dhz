@@ -1,0 +1,1 @@
+export class AsyncLocalStorage { constructor() { this._store = undefined; } run(store, cb) { const prev = this._store; this._store = store; try { return cb(); } finally { this._store = prev; } } getStore() { return this._store; } enterWith(store) { this._store = store; } disable() { this._store = undefined; } }

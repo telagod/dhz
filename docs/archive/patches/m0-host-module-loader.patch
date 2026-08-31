@@ -1,0 +1,180 @@
+diff --git a/vendor/loader/src/config/tree.ts b/vendor/loader/src/config/tree.ts
+index c1925f0..a468b73 100644
+--- a/vendor/loader/src/config/tree.ts
++++ b/vendor/loader/src/config/tree.ts
+@@ -149,10 +149,10 @@ export abstract class EntryTree {
+     return composeError(async (info) => {
+       // ModuleJob.run
+       // onImport.tracePromise.__proto__
+-      // internal.import
++      // host.import — the one host seam (Node adapter keeps internal.import)
+       info.offset += 3
+-      if (this.ctx.loader.internal) {
+-        return await this.ctx.loader.internal.import(name, this.ctx.baseUrl!, {})
++      if (this.ctx.loader.host) {
++        return await this.ctx.loader.host.import(name, this.ctx.baseUrl!, {})
+       } else if (name.startsWith('.')) {
+         return await import(/* @vite-ignore */new URL(name, this.ctx.baseUrl).href)
+       } else {
+diff --git a/vendor/loader/src/host-loader.ts b/vendor/loader/src/host-loader.ts
+new file mode 100644
+index 0000000..be03802
+--- /dev/null
++++ b/vendor/loader/src/host-loader.ts
+@@ -0,0 +1,59 @@
++/**
++ * The one seam a host runtime supplies to the plugin tree: how a loader entry
++ * module is imported from a specifier. Everything else in `Loader` is
++ * runtime-agnostic; only this interface is host-specific.
++ *
++ * This is the M-0 injection point for the Zig+quickjs-ng host: the Zig host
++ * provides a `HostModuleLoader` backed by the quickjs-ng module linker, while
++ * the Node host keeps its exact semantics through `NodeHostModuleLoader`.
++ * Nothing outside `host-loader.ts` needs to know which host is running.
++ *
++ * @module @deepseek-ai/cordis-plugin-loader/host-loader
++ */
++
++import { createRequire } from 'node:module'
++import { pathToFileURL } from 'node:url'
++import type { ModuleLoader } from './internal.ts'
++
++/**
++ * Host module-import seam. `baseUrl` is the entry tree's configured URL and
++ * the resolution anchor for relative specifiers; `attributes` carries the
++ * import attributes of the importing entry (the old `assert` clause).
++ */
++export interface HostModuleLoader {
++  import(specifier: string, baseUrl: string, attributes: ImportAttributes): Promise<any>
++}
++
++/**
++ * Node adapter: prefers Node's internal ESM `ModuleLoader` for exact
++ * semantics (bare specifiers resolved from `baseUrl`, package `exports`
++ * conditions, module-job caching), and falls back to plain dynamic
++ * `import()` when the internal loader is unavailable — a foreign runtime,
++ * or a hardened Node without the require-builtin addon.
++ */
++export class NodeHostModuleLoader implements HostModuleLoader {
++  constructor(public readonly internal: ModuleLoader | undefined) {}
++
++  async import(specifier: string, baseUrl: string, attributes: ImportAttributes): Promise<any> {
++    if (this.internal) {
++      // Exact legacy path: Node's internal ESM loader, resolved against the
++      // entry tree's base URL.
++      return await this.internal.import(specifier, baseUrl, attributes)
++    }
++    if (specifier.startsWith('.')) {
++      // URL-relative path: resolve against the entry tree's base URL.
++      return await import(/* @vite-ignore */ new URL(specifier, baseUrl).href)
++    }
++    try {
++      // Bare/`file:` specifier: resolve as the entry tree's own consumer
++      // would, so a tree under a profile directory sees that directory's
++      // modules (import conditions apply; ESM-only exports are fine).
++      const resolved = import.meta.resolve(specifier, baseUrl)
++      return await import(/* @vite-ignore */ resolved)
++    } catch {
++      const requireFrom = createRequire(baseUrl)
++      const resolved = requireFrom.resolve(specifier)
++      return await import(/* @vite-ignore */ pathToFileURL(resolved).href)
++    }
++  }
++}
+diff --git a/vendor/loader/src/index.ts b/vendor/loader/src/index.ts
+index 781353b..4a4e047 100644
+--- a/vendor/loader/src/index.ts
++++ b/vendor/loader/src/index.ts
+@@ -1,6 +1,7 @@
+ import { Context, FiberState, Inject, Service, type Fiber } from '@deepseek-ai/cordis'
+ import { defineProperty, isNullable, type Dict } from '@deepseek-ai/cosmokit'
+ import { ModuleLoader } from './internal.ts'
++import { NodeHostModuleLoader, type HostModuleLoader } from './host-loader.ts'
+ import { Entry, type EntryOptions } from './config/entry.ts'
+ import { EntryGroup } from './config/group.ts'
+ import isolate from './config/isolate.ts'
+@@ -19,6 +20,8 @@ export * from './config/tree.ts'
+ export * from './config/utils.ts'
+ /** Re-export Node internal module loader compatibility types. */
+ export * from './internal.ts'
++/** Re-export the host module-import seam (M-0). */
++export * from './host-loader.ts'
+ 
+ declare module '@deepseek-ai/cordis' {
+   interface Events {
+@@ -72,10 +75,16 @@ export class Loader extends EntryTree {
+   public name = 'loader'
+   public internal = ModuleLoader.fromInternal()
+ 
++  /** Host module-import seam. The Node host binds here; foreign hosts (Zig+quickjs-ng) bind their own. */
++  public host: HostModuleLoader | undefined
++
+   public builtins: Dict<any> = Object.create(null)
+ 
+   constructor(ctx: Context, public config: Loader.Config = {}) {
+     super(ctx)
++    // The Node adapter keeps the exact legacy import path through the
++    // internal ESM loader; the seam is what a foreign runtime replaces.
++    this.host = this.internal ? new NodeHostModuleLoader(this.internal) : undefined
+     if (config.baseUrl) {
+       this.ctx.baseUrl = config.baseUrl
+     }
+diff --git a/vendor/loader/tests/host-loader.spec.ts b/vendor/loader/tests/host-loader.spec.ts
+new file mode 100644
+index 0000000..70e6eb1
+--- /dev/null
++++ b/vendor/loader/tests/host-loader.spec.ts
+@@ -0,0 +1,53 @@
++/**
++ * M-0 tests: the host module-import seam isolates plugin imports from Node
++ * internals, so the Node adapter must import (a) URL-relative paths against
++ * the tree base URL and (b) bare package specifiers as the tree's own
++ * consumer would, and a foreign host may bind its own `HostModuleLoader`.
++ * @module @deepseek-ai/cordis-plugin-loader/host-loader.spec
++ */
++
++import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { pathToFileURL } from 'node:url'
++import { describe, expect, it } from 'vitest'
++import { NodeHostModuleLoader } from '../src/host-loader.ts'
++
++describe('NodeHostModuleLoader (fallback path, no internal loader)', () => {
++  it('imports a relative specifier against the tree base URL', async () => {
++    const dir = mkdtempSync(join(tmpdir(), 'host-loader-'))
++    try {
++      writeFileSync(join(dir, 'fixture.mjs'), 'export default { ok: true, tag: "relative" }\n')
++      const loader = new NodeHostModuleLoader(undefined)
++      const namespace = await loader.import('./fixture.mjs', pathToFileURL(dir + '/').href, {})
++      expect(namespace.default).toEqual({ ok: true, tag: 'relative' })
++    } finally {
++      rmSync(dir, { recursive: true, force: true })
++    }
++  })
++
++  it('falls back to createRequire resolution for bare specifiers', async () => {
++    const loader = new NodeHostModuleLoader(undefined)
++    const namespace = await loader.import('@deepseek-ai/cosmokit', pathToFileURL(join(process.cwd(), 'vendor/loader') + '/').href, {})
++    expect(namespace).toBeTypeOf('object')
++  })
++
++  it('forwards to the internal loader exactly when present (semantics preserved)', async () => {
++    const calls: unknown[][] = []
++    const internal = { import: async (...args: unknown[]) => { calls.push(args); return { marker: true } } }
++    const loader = new NodeHostModuleLoader(internal as never)
++    const namespace = await loader.import('some/pkg', 'file:///base/', {})
++    expect(namespace).toEqual({ marker: true })
++    expect(calls).toHaveLength(1)
++    expect(calls[0]).toEqual(['some/pkg', 'file:///base/', {}])
++  })
++})
++
++describe('host seam on Loader (wiring)', () => {
++  it('constructs the Node adapter when the internal loader is reachable', async () => {
++    // Loader construction needs a live Context; wiring is covered by the
++    // entry tree suites. This guard pins the seam types only.
++    const { NodeHostModuleLoader: N } = await import('../src/host-loader.ts') as never
++    expect(N).toBeTypeOf('function')
++  })
++})

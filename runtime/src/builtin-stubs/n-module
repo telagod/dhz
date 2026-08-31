@@ -1,0 +1,1 @@
+export function createRequire() { return (spec) => ({ name: 'embedded', version: '0.0.0-embedded' }); }

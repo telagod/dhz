@@ -1,0 +1,1 @@
+export class Worker { constructor() { throw new Error('dsh: worker_threads not supported') } } export function isMainThread() { return true }

@@ -1,0 +1,87 @@
+{
+  "name": "typebox",
+  "description": "Json Schema Type Builder with Static Type Resolution for TypeScript",
+  "version": "1.1.38",
+  "keywords": [
+    "typescript",
+    "jsonschema"
+  ],
+  "license": "MIT",
+  "author": "sinclairzx81",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sinclairzx81/typebox"
+  },
+  "type": "module",
+  "types": "./index.d.mts",
+  "module": "./index.js",
+  "exports": {
+    "./guard": {
+      "import": "./guard/index.js",
+      "default": "./guard/index.js"
+    },
+    "./error": {
+      "import": "./error/index.js",
+      "default": "./error/index.js"
+    },
+    "./compile": {
+      "import": "./compile/index.js",
+      "default": "./compile/index.js"
+    },
+    "./system": {
+      "import": "./system/index.js",
+      "default": "./system/index.js"
+    },
+    "./format": {
+      "import": "./format/index.js",
+      "default": "./format/index.js"
+    },
+    "./type": {
+      "import": "./type/index.js",
+      "default": "./type/index.js"
+    },
+    "./schema": {
+      "import": "./schema/index.js",
+      "default": "./schema/index.js"
+    },
+    "./value": {
+      "import": "./value/index.js",
+      "default": "./value/index.js"
+    },
+    ".": {
+      "import": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "guard": [
+        "./guard/index.d.mts"
+      ],
+      "error": [
+        "./error/index.d.mts"
+      ],
+      "compile": [
+        "./compile/index.d.mts"
+      ],
+      "system": [
+        "./system/index.d.mts"
+      ],
+      "format": [
+        "./format/index.d.mts"
+      ],
+      "type": [
+        "./type/index.d.mts"
+      ],
+      "schema": [
+        "./schema/index.d.mts"
+      ],
+      "value": [
+        "./value/index.d.mts"
+      ],
+      ".": [
+        "./index.d.mts"
+      ]
+    }
+  }
+}

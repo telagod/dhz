@@ -1,0 +1,1 @@
+export const constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 }; export class Buffer extends Uint8Array { static from(x) { return new Uint8Array(x); } static alloc(n) { return new Uint8Array(n); } static isBuffer() { return false; } }

@@ -1,0 +1,47 @@
+{
+  "baseline": "dsh web (Node host) memory baseline — M-1",
+  "capturedAt": "2025-08-26T00:52:00+08:00",
+  "host": {
+    "pid": 27737,
+    "cmd": "node /home/dapao/.npm/_npx/1e7f6d9597241db0/node_modules/.bin/dsh web",
+    "vmRssKb": 291480,
+    "vmRssMb": 284.6,
+    "vmSizeKb": 10313136,
+    "vmSizeMb": 10071.4,
+    "threads": 11,
+    "samples": [
+      { "kB": 291480, "MB": 284.6 },
+      { "kB": 291480, "MB": 284.6 },
+      { "kB": 291480, "MB": 284.6 }
+    ],
+    "children": [
+      { "pid": 37116, "rssKb": 3748, "comm": "bash" }
+    ]
+  },
+  "wrapper": {
+    "pid": 27367,
+    "cmd": "npm exec @deepseek-ai/dsh web",
+    "vmRssKb": 56924,
+    "vmRssMb": 55.6
+  },
+  "history": {
+    "note": "会话开始时的首次采样（本对话早期）：209780 kB (~205 MB)。经过一次长会话（GUI + 探针插件 + 大量工具调用）后 Rss 升至 ~284 MB — RSS 随会话活动单调棘轮，未见回落。",
+    "firstSampleKb": 209780,
+    "laterSampleKb": 291480,
+    "deltaKb": 81700,
+    "deltaMb": 79.8
+  },
+  "system": {
+    "memTotalMb": 15817,
+    "memUsedMb": 11371,
+    "memAvailableMb": 4445,
+    "swapTotalMb": 4095,
+    "swapUsedMb": 759
+  },
+  "interpretation": [
+    "基线 ~275-285MB（进程树合计 ~340MB 含 npm 包装）——比常引用的 205MB 基线高，因为这是带会话负载的实测姿态。",
+    "M-1 目标：用诊断插件得到 heapUsed/RSS 构成分布（当前只能从 /proc 拿到 RSS）。",
+    "棘轮现象（79.8MB 增量）是 V8 堆不回落的直接证据；Zig host + context 生命周期在会话关闭时整体释放，这正是架构收益。",
+    "线程数 11（V8 主线程 + GC/libuv 线程池 + JIT 线程），无 code-runtime worker 驻留（按需 spawn）。"
+  ]
+}

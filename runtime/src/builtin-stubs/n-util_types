@@ -1,0 +1,1 @@
+export function isPromise(v) { return typeof v === 'object' && v !== null && typeof v.then === 'function'; }

@@ -1,0 +1,1 @@
+export function setTimeout(ms, value, opts) { return new Promise((res) => globalThis.setTimeout(() => res(value), ms)); } export function setImmediate(value) { return new Promise((res) => globalThis.setTimeout(() => res(value), 0)); } export function scheduler() { return { wait: (ms, v) => new Promise((res) => globalThis.setTimeout(() => res(v), ms)) }; }

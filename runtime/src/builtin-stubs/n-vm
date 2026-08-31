@@ -1,0 +1,1 @@
+export function runInThisContext(code, opts) { return (0, eval)(code); } export function createContext() { return {} } export function runInContext(code) { return (0, eval)(code); }

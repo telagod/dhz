@@ -1,0 +1,1 @@
+export class StringDecoder { constructor(enc) { this.enc = enc || 'utf8' } write(buf) { return new TextDecoder(this.enc).decode(buf) } end() { return '' } }

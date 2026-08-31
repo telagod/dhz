@@ -1,0 +1,1 @@
+export default function assert(c) { if (!c) throw new Error('assertion failed'); }

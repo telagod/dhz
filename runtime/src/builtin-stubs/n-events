@@ -1,0 +1,1 @@
+export class EventEmitter { constructor() { this.handlers = {}; } on(n, f) { (this.handlers[n] ??= []).push(f); return this; } emit(n, ...a) { for (const f of this.handlers[n] ?? []) f(...a); return true; } } export default { EventEmitter }

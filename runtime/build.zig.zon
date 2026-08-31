@@ -1,0 +1,11 @@
+.{
+    .name = .dsh_zig_runtime,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x5e3182782159a171,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

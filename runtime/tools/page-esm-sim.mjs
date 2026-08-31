@@ -27,18 +27,44 @@ class FakeWebSocket {
   constructor(url) {
     this.url = url;
     this.readyState = 0;
+    this._buf = Buffer.alloc(0);
     const u = new URL(url);
     const key = randomBytes(16).toString('base64');
     const req = http.request({ host: u.hostname, port: +u.port, path: u.pathname, headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': 13, 'Sec-WebSocket-Key': key, origin: 'http://127.0.0.1:3088' } });
     req.on('upgrade', (res, socket) => {
       this.readyState = 1;
       this._socket = socket;
-      socket.on('data', () => {});
+      socket.on('data', (d) => this._feed(d));
       socket.on('close', () => { this.readyState = 3; this._close && this._close.forEach((f) => f({ code: 1006 })); });
       this._open && this._open.forEach((f) => f({}));
     });
     req.on('error', (e) => { this._err && this._err.forEach((f) => f(e)); });
     req.end();
+  }
+  _feed(chunk) {
+    this._buf = Buffer.concat([this._buf, chunk]);
+    // 解析 unmasked 服务端 text 帧 → message 事件（data 为字符串）
+    while (this._buf.length >= 2) {
+      const b0 = this._buf[0], b1 = this._buf[1];
+      const op = b0 & 0x0f;
+      let len = b1 & 0x7f, off = 2;
+      if (len === 126) { if (this._buf.length < 4) return; len = this._buf.readUInt16BE(2); off = 4; }
+      else if (len === 127) { if (this._buf.length < 10) return; len = Number(this._buf.readBigUInt64BE(2)); off = 10; }
+      if (this._buf.length < off + len) return;
+      const payload = this._buf.slice(off, off + len).toString('utf8');
+      this._buf = this._buf.slice(off + len);
+      if (op === 1) {
+        this._message && this._message.forEach((f) => f({ data: payload }));
+      } else if (op === 9) {
+        // ping → pong（掩码帧：客户方向必须掩码——简化为随机掩码）
+        const mask = randomBytes(4);
+        const pong = Buffer.alloc(2 + 4 + payload.length);
+        pong[0] = 0x8A; pong[1] = 0x80 | payload.length;
+        mask.copy(pong, 2);
+        for (let i = 0; i < payload.length; i++) pong[6 + i] = payload.charCodeAt(i) ^ mask[i % 4];
+        this._socket && this._socket.write(pong);
+      }
+    }
   }
   addEventListener(ev, f) { this['_' + ev] = (this['_' + ev] || []).concat(f); }
   send() {}
@@ -117,4 +143,9 @@ for (const src of srcs) {
   }
 }
 console.log('PAGE-ESM: 完成initial-load；存活 30s 观察连接行为');
-setTimeout(() => { console.log('done'); process.exit(0); }, 30000);
+// 连接循环观测：拦截 console.warn/error 找 reconnect 痕迹
+const origWarn = console.warn;
+console.warn = function (...a) { console.log('[page-warn]', ...a); origWarn.apply(console, arguments); };
+const origErr = console.error;
+console.error = function (...a) { console.log('[page-error]', ...a.map((x) => String(x && x.message || x).slice(0, 200))); origErr.apply(console, arguments); };
+setTimeout(() => { console.log('done（30s 存活结束）'); process.exit(0); }, 30000);

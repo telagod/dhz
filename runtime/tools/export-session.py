@@ -44,9 +44,9 @@ def main():
             m = d.get('message') or {}
             txt = text_of(m.get('content'))[:400]
             events.append({ 'type': 'tool-result', 'text': txt, 'time': j.get('time') })
-    # 展示轨 = 末尾 tail 条；上下文轨取 2×tail 窗口（自主长链里 user 可能落在展示窗外——
-    # 实测 tail=200 全 assistant，归一化后 pop 光变 0 条）
-    ctx_events = events[-(tail * 2):]
+    # 展示轨 = 末尾 tail 条；上下文轨取 8×tail 窗口（自主长链单轮数百工具事件——
+    # 2×tail 窗口实测仍会全 assistant，归一化 pop 光变 0 条；8× 后稳定覆盖最近 user 轮）
+    ctx_events = events[-(tail * 8):]
     events = events[-tail:]
     # LLM 上下文轨归一化：合并连续同角色 + 首条必须 user——上游对非交替/assistant 开头
     # 的消息序列在 stream:true 下会静默回空（实测 26 条原始轨 0 data 行，归一化 6 条 906 行）
@@ -59,6 +59,8 @@ def main():
         else:
             messages.append({ 'role': role, 'content': e['text'] })
     while messages and messages[0]['role'] != 'user': messages.pop(0)
+    if len(messages) > 24: messages = messages[-24:]  # 截尾限窗——保最近 24 条（控 prompt 体量/时延）
+    while messages and messages[0]['role'] != 'user': messages.pop(0)  # 截尾后再保首条 user
     with open(out, 'w', encoding='utf-8') as f:
         json.dump({ 'meta': meta, 'events': events, 'messages': messages }, f, ensure_ascii=False)
     print('export: %s events=%d messages=%d -> %s' % (meta.get('id'), len(events), len(messages), out))

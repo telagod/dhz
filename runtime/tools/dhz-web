@@ -1,0 +1,37 @@
+#!/bin/sh
+# dhz web 常驻服务启动器（Zig 运行时 web 模式）
+# 用法: dhz-web [端口=3088]        启动（前台，Ctrl+C 停止）
+#       dhz-web stop [端口=3088]   停止已在跑的实例
+# 注意: 单实例设计——运行时使用固定共享资源（llm-mock 18099、会话库 /tmp/dsh-sq.db WAL），
+#       同时跑两个实例会导致第二个 boot 停滞并报误导性错误（曾误报 ScaleSessions）。
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR/.." || exit 1   # 必须位于 runtime/（boot 拉取同目录 tools/llm-mock.py 与 golden/）
+
+port_pid() { ss -tlnp "sport = :$1" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2; }
+
+if [ "$1" = stop ]; then
+  PORT="${2:-3088}"
+  pid=$(port_pid "$PORT")
+  if [ -n "$pid" ]; then
+    kill "$pid" && echo "dhz-web stopped (pid $pid, port $PORT)"
+  else
+    echo "dhz-web: 端口 $PORT 没有监听中的实例"
+  fi
+  exit 0
+fi
+
+PORT="${1:-3088}"
+existing=$(pgrep -f 'dsh-zig-runtime web' | head -1)
+if [ -n "$existing" ]; then
+  echo "dhz-web: 已有实例在跑 (pid $existing)——单实例设计，先停掉: dhz-web stop" >&2
+  exit 1
+fi
+owner=$(port_pid "$PORT")
+if [ -n "$owner" ]; then
+  echo "dhz-web: 端口 $PORT 被其他进程占用 (pid $owner)，换个端口: dhz-web 3090" >&2
+  exit 1
+fi
+
+for p in $(pgrep -f 'llm-mock[.]py'); do kill $p 2>/dev/null; done
+exec env DSH_WEB_PORT="$PORT" DSH_WEB_SERVE=1 out/dsh-zig-runtime/dsh-zig-runtime web

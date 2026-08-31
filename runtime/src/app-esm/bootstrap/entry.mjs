@@ -585,6 +585,9 @@ for (const row of merged.values()) {
             for (let i = 0; i < sha.length; i += 2) bin += String.fromCharCode(parseInt(sha.slice(i, i + 2), 16))
             return 'ws-accept:' + globalThis.btoa(bin)
           }
+          // 探针噪音面：boot 自建的 scale-*/boot-* 会话不进 GUI 订阅流（53 帧垃圾
+          // 会话直灌 GUI——处理 50 个未知会话是浏览器侧崩溃的合理嫌疑）
+          const __guiVisible = (sid) => !(String(sid).startsWith('scale-') || String(sid).startsWith('boot-') || String(sid).startsWith('ws-echo'))
           globalThis.dshServices.http.handle('/api/events.mux', (p, h, frame, connId) => {
             if (frame !== undefined) { globalThis.__muxWsInFrame = String(frame).slice(0, 120); return undefined } // 下行 only——关闭帧诊断留痕
             const isWs = h && h['sec-websocket-key']
@@ -595,6 +598,7 @@ for (const row of merged.values()) {
                 try {
                   let n = 0
                   for (const s of c.sessions.list()) {
+                    if (!__guiVisible(s.id)) continue
                     const evs = s.log || []
                     n += globalThis.dshServices.http.push(__sseFrame({ type: 'session/subscribed', sessionId: s.id, lastSeq: evs.length ? (evs[evs.length - 1].seq ?? evs.length) : 0 }), connId)
                   }
@@ -646,7 +650,7 @@ for (const row of merged.values()) {
             globalThis.__unaryLast = method
             try {
               if (method === 'session.list') {
-                return __jsonResp(__unaryOk(rpcId, { items: c.sessions.list().map(__sessionSummary) }))
+                return __jsonResp(__unaryOk(rpcId, { items: c.sessions.list().filter((s) => __guiVisible(s.id)).map(__sessionSummary) }))
               }
               if (method === 'session.history') {
                 const pl = (msg && msg.payload) || {}

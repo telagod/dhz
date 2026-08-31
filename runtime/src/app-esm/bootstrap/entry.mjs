@@ -727,6 +727,42 @@ for (const row of merged.values()) {
                 c.sessions.create(sid, { seed: [], meta: { cwd: pl2.cwd || '/home/dapao/proj/dhz' } })
                 return __jsonResp(__unaryOk(rpcId, { sessionId: sid, ...(pl2.agentPreset ? { agentPreset: pl2.agentPreset } : {}) }))
               }
+              if (method === 'session.search') {
+                const pl3 = (msg && msg.payload) || {}
+                const q3 = String(pl3.query || '').toLowerCase()
+                const items3 = []
+                for (const s of c.sessions.list()) {
+                  if (items3.length >= 20) break
+                  const evs = s.log || []
+                  let snip = ''
+                  for (const ev of evs) {
+                    const d4 = ev.data || {}
+                    let txt = ''
+                    if (ev.type === 'user/message') txt = ((d4.content || [])[0] || {}).text || ''
+                    else if (ev.type === 'assistant/message') { const ps = ((d4.message || {}).content) || []; txt = ps.filter((x) => x && x.type === 'text').map((x) => x.text || '').join('\n') }
+                    if (txt && txt.toLowerCase().indexOf(q3) >= 0) { snip = txt.slice(0, 200); break }
+                  }
+                  if (snip) items3.push({ sessionId: s.id, snippet: snip })
+                }
+                return __jsonResp(__unaryOk(rpcId, { items: items3, hasMore: false }))
+              }
+              if (method === 'session.rename') {
+                const pl4 = (msg && msg.payload) || {}
+                const sess4 = c.sessions.get(pl4.sessionId)
+                let seq4 = 0
+                if (sess4) {
+                  sess4.append('session/title', { title: String(pl4.title || '') })
+                  const evs4 = sess4.log || []
+                  seq4 = evs4.length ? (evs4[evs4.length - 1].seq ?? evs4.length) : 0
+                }
+                return __jsonResp(__unaryOk(rpcId, { title: String(pl4.title || ''), seq: seq4 }))
+              }
+              if (method === 'subagent.list') {
+                return __jsonResp(__unaryOk(rpcId, { entries: [], parentAvailable: false }))
+              }
+              if (method === 'subagent.history') {
+                return __jsonResp(__unaryOk(rpcId, { events: [], hasMore: false }))
+              }
               if (method === 'session.cancel') {
                 return __jsonResp(__unaryOk(rpcId, { accepted: true }))
               }

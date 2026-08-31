@@ -526,7 +526,59 @@ for (const row of merged.values()) {
           try { globalThis.dshServices.http.start(Number(globalThis.__dshWebPort) || 18086) } catch (e) { globalThis.__webStartErr = 'listen port ' + (Number(globalThis.__dshWebPort) || 18086) + ' failed: ' + String(e && e.message ? e.message : e).slice(0, 60) + '（端口被占？）' }
           const __webPage = { body: '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>dsh web</title><style>body{font-family:system-ui;margin:24px;max-width:880px}#log{border:1px solid #ccc;border-radius:6px;padding:12px;height:52vh;overflow:auto;white-space:pre-wrap;font-size:13px;background:#fafafa}#row{display:flex;gap:8px;margin-top:10px}#in{flex:1;padding:8px;border:1px solid #ccc;border-radius:6px}button{padding:8px 16px}</style></head><body><h1>dsh web</h1><p>Zig 运行时 web 服务模式在线。活性：<span id="pp">…</span>　｜　完整 DSH GUI：<a href="http://127.0.0.1:3080">127.0.0.1:3080</a></p><div id="log">(载入中…)</div><div id="row"><input id="in" placeholder="继续说…（Enter 发送）"><button id="send">发送</button></div><script>var log=document.getElementById("log"),inp=document.getElementById("in");var ws=new WebSocket("ws://"+location.host+"/ws");function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")}function render(evs){var h="";for(var i=0;i<evs.length;i++){var e=evs[i];if(e.type==="chat/user")h+="\n【你】 "+esc(e.text)+"\n";else if(e.type==="chat/assistant")h+="\n【助手】 "+esc(e.text)+(e.toolCalls?"  🔧×"+e.toolCalls:"")+"\n";else if(e.type==="chat/tool-call")h+="  🔧 "+esc(e.name||"?")+" "+esc((e.text||"").slice(0,120))+"\n";else if(e.type==="chat/tool-result")h+="  ↩︎ "+esc((e.text||"").slice(0,200))+"\n"}log.innerHTML=h||"(空)";log.scrollTop=log.scrollHeight}ws.onopen=function(){ws.send(JSON.stringify({op:"subscribe",session:"chat"}));ws.send(JSON.stringify({op:"history",limit:300}))};ws.onmessage=function(ev){try{var m=JSON.parse(ev.data);if(m.op==="history")render(m.events);else if(m.op==="event"&&m.session==="chat")ws.send(JSON.stringify({op:"history",limit:300}));else if(m.op==="chat-reply"&&m.error)log.innerHTML+="\n[系统] "+esc(m.error)+"\n"}catch(x){}};function send(){var t=inp.value.trim();if(!t)return;inp.value="";ws.send(JSON.stringify({op:"chat-send",session:"chat",text:t}))}document.getElementById("send").onclick=send;inp.onkeydown=function(e){if(e.key==="Enter")send()};fetch("/ping").then(function(r){return r.text()}).then(function(t){document.getElementById("pp").textContent=t})</script></body></html>', contentType: 'text/html; charset=utf-8' }
           globalThis.dshServices.http.handle('/index.html', (p) => { globalThis.__webRoot = 'hit'; return __webPage })
-          globalThis.dshServices.http.handle('/', (p) => __webPage)
+          globalThis.dshServices.http.handle('/panel', (p) => __webPage)
+
+          // —— web-shell 伺服面（rc.2 壳本体：vendor 预载 + 同步路由；/ 给真 WebUI）
+          try {
+            const manRaw = await c.fs.readText({ displayPath: 'vendor/web-shell/manifest.json', targetKey: 'vendor/web-shell/manifest.json' })
+            const man = JSON.parse(typeof manRaw === 'string' ? manRaw : String(manRaw))
+            const __shellFiles = new Map()
+            for (const f of man.files) {
+              try {
+                const raw = await c.fs.readText({ displayPath: f.path, targetKey: f.path })
+                __shellFiles.set(f.url, { body: String(raw), mime: f.mime, enc: f.enc })
+              } catch (fe) { globalThis.__shellSkip = (globalThis.__shellSkip ?? 0) + 1 }
+            }
+            globalThis.__shellFiles = __shellFiles.size
+            const __shellHtml = __shellFiles.get('/shell.html')
+            globalThis.dshServices.http.handle('/', (p) => __shellHtml ? { body: __shellHtml.body, contentType: __shellHtml.mime } : { body: 'shell missing', status: 500 })
+            const serveStatic = (p) => {
+              const q = p.indexOf('?')
+              const f = __shellFiles.get(q >= 0 ? p.slice(0, q) : p)
+              if (!f) return { body: 'not found: ' + p, status: 404 }
+              return f.enc === 'b64' ? { body: f.body, contentType: f.mime, encoding: 'base64' } : { body: f.body, contentType: f.mime }
+            }
+            globalThis.dshServices.http.handle('/assets/', serveStatic, false)
+            globalThis.dshServices.http.handle('/plugins/', serveStatic, false)
+            globalThis.dshServices.http.handle('/favicon.svg', serveStatic)
+            globalThis.dshServices.http.handle('/manifest.webmanifest', serveStatic)
+          } catch (e) { globalThis.__shellErr = String(e).slice(0, 90) }
+          // —— rc.2 网关面（Phase C 存根：mux 握手 + subscribed 帧回放；host 静默上行）
+          globalThis.__muxConns = {}
+          const __wsAccept = (h) => {
+            const key = String((h && h['sec-websocket-key']) || '')
+            const sha = globalThis.dshServices.crypto.sha1(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+            let bin = ''
+            for (let i = 0; i < sha.length; i += 2) bin += String.fromCharCode(parseInt(sha.slice(i, i + 2), 16))
+            return 'ws-accept:' + globalThis.btoa(bin)
+          }
+          globalThis.dshServices.http.handle('/api/events.mux', (p, h, frame, connId) => {
+            if (frame !== undefined) { globalThis.__muxLastFrame = String(frame).slice(0, 200); return undefined }
+            globalThis.__muxConns[connId] = true
+            setTimeout(() => {
+              try {
+                for (const s of c.sessions.list()) {
+                  const evs = s.log || []
+                  globalThis.dshServices.http.push(JSON.stringify({ type: 'server-request', rpcId: globalThis.crypto.randomUUID(), method: 'session/subscribed', payload: { type: 'session/subscribed', sessionId: s.id, lastSeq: evs.length ? (evs[evs.length - 1].seq ?? evs.length) : 0 } }), connId)
+                }
+              } catch (e) {}
+            }, 60)
+            return __wsAccept(h)
+          }, true)
+          globalThis.dshServices.http.handle('/api/events.host', (p, h, frame, connId) => {
+            if (frame !== undefined) { globalThis.__hostLastFrame = String(frame).slice(0, 200); return undefined }
+            return __wsAccept(h)
+          }, true)
           globalThis.dshServices.http.handle('/ping', (p) => 'pong:' + p)
           globalThis.dshServices.http.handle('/post-echo', (p, h, body) => { try { globalThis.__gwPostBody = String(body); const m = JSON.parse(body || ''); return 'post:' + (m && m.echo ? m.echo : '?') } catch (e) { return 'post:bad:' + String(e).slice(0, 40) } })
           globalThis.dshServices.http.handle('/post-echo', (p, h, body) => { try { const m = JSON.parse(body || ''); return 'post:' + (m && m.echo ? m.echo : '?') } catch (e) { return 'post:bad' } })

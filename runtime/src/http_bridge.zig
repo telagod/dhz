@@ -408,8 +408,9 @@ fn serveConn(fd: i32) void {
             out = .{ .status = 403, .body = "forbidden" };
         } else if (callbackForPath(req.path)) |cb| {
             var ct: []const u8 = "text/plain; charset=utf-8";
-            const body = callGuest(req, cb, &ct);
-            out = .{ .status = 200, .body = body, .content_type = ct };
+            var st: u16 = 200;
+            const body = callGuest(req, cb, &ct, &st);
+            out = .{ .status = st, .body = body, .content_type = ct };
         } else {
             out = .{ .status = 404, .body = "not found" };
         }
@@ -763,8 +764,9 @@ fn handleConnection(conn: i32) bool {
     }
     if (callbackForPath(req2.path)) |cb| {
         var ct: []const u8 = "text/plain; charset=utf-8";
-        const body = callGuest(req2, cb, &ct);
-        out = .{ .status = 200, .body = body, .content_type = ct };
+        var st: u16 = 200;
+        const body = callGuest(req2, cb, &ct, &st);
+        out = .{ .status = st, .body = body, .content_type = ct };
     } else {
         out = .{ .status = 404, .body = "not found" };
     }
@@ -834,7 +836,8 @@ fn writeWsFrame(fd: i32, payload: []const u8) void {
 fn beginUpgrade(entry: *ConnEntry, req: http_svc.Request, cb: c.JSValue) void {
     entry.upgraded = true;
     var ct_ws: []const u8 = "text/plain; charset=utf-8";
-    const accept = callGuest(req, cb, &ct_ws);
+    var st_ws: u16 = 200;
+    const accept = callGuest(req, cb, &ct_ws, &st_ws);
     const accept_val = if (std.mem.startsWith(u8, accept, "ws-accept:")) accept[10..] else accept;
     var hdr_buf: [256]u8 = undefined;
     const hdr = std.fmt.bufPrint(&hdr_buf, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n\r\n", .{accept_val}) catch {
@@ -882,8 +885,16 @@ fn serveUpgraded(entry: *ConnEntry) void {
         c.JS_FreeValue(ctx, path_val);
         c.JS_FreeValue(ctx, payload_val);
         c.JS_FreeValue(ctx, conn_val);
-        // 响应走模块级 g_body_buf（128K——chat history 等大块面；原 16KB 栈缓冲静默丢帧已踩）
+        // 响应走模块级 g_body_buf（2M——chat history/web-shell 大资产面；原 16KB 栈缓冲静默丢帧已踩）
         var resp_len: usize = 0;
+        if (c.JS_IsUndefined(result) or c.JS_IsNull(result)) {
+            // guest 静默（RPC 面：无回复帧）
+            c.JS_FreeValue(ctx, result);
+            const remain0 = entry.len - fr.total;
+            std.mem.copyForwards(u8, entry.buf[0..remain0], entry.buf[fr.total..entry.len]);
+            entry.len = remain0;
+            continue;
+        }
         if (!c.JS_IsException(result)) {
             const s = c.JS_ToCStringLen(ctx, null, result);
             if (s) |sp| {
@@ -939,7 +950,7 @@ fn buildHeaders(ctx: ?*c.JSContext, raw: []const u8) c.JSValue {
     return obj;
 }
 
-fn callGuest(req: http_svc.Request, cb: c.JSValue, ct_out: *[]const u8) []const u8 {
+fn callGuest(req: http_svc.Request, cb: c.JSValue, ct_out: *[]const u8, st_out: *u16) []const u8 {
     const ctx = g_req_ctx orelse return "no ctx";
     const path_val = c.JS_NewStringLen(ctx, req.path.ptr, req.path.len);
     if (c.JS_IsException(path_val)) return "bad path";
@@ -958,7 +969,7 @@ fn callGuest(req: http_svc.Request, cb: c.JSValue, ct_out: *[]const u8) []const 
             c.JS_FreeValue(ctx, ex);
             return "handler error";
         }
-        return extractResponse(ctx, result, ct_out);
+        return extractResponse(ctx, result, ct_out, st_out);
     }
     const args = [_]c.JSValue{ path_val, hdr_val };
     const result = c.JS_Call(ctx, cb, undefv, 2, @constCast(&args));
@@ -969,20 +980,27 @@ fn callGuest(req: http_svc.Request, cb: c.JSValue, ct_out: *[]const u8) []const 
         c.JS_FreeValue(ctx, ex);
         return "handler error";
     }
-    return extractResponse(ctx, result, ct_out);
+    return extractResponse(ctx, result, ct_out, st_out);
 }
 
-// 响应契约：handler 返回 string → text/plain（默认）；返回 { body, contentType? } → 自定义 Content-Type。
+// 响应契约：handler 返回 string → text/plain/200（默认）；
+// 返回 { body, contentType?, encoding?: "base64", status? } → 自定义类型/二进制体/状态码。
 // 响应体/类型生命周期：写入模块级缓冲（单线程同步帧，writeResponse 立即消费）。
-fn extractResponse(ctx: ?*c.JSContext, result: c.JSValue, ct_out: *[]const u8) []const u8 {
+fn extractResponse(ctx: ?*c.JSContext, result: c.JSValue, ct_out: *[]const u8, st_out: *u16) []const u8 {
     ct_out.* = "text/plain; charset=utf-8";
+    st_out.* = 200;
     defer c.JS_FreeValue(ctx, result);
     var body_val = result;
+    var is_b64 = false;
     if (c.JS_IsObject(result)) {
         const b = c.JS_GetPropertyStr(ctx, result, "body");
         const ctv = c.JS_GetPropertyStr(ctx, result, "contentType");
+        const enc = c.JS_GetPropertyStr(ctx, result, "encoding");
+        const stv = c.JS_GetPropertyStr(ctx, result, "status");
         defer c.JS_FreeValue(ctx, b);
         defer c.JS_FreeValue(ctx, ctv);
+        defer c.JS_FreeValue(ctx, enc);
+        defer c.JS_FreeValue(ctx, stv);
         body_val = b;
         if (c.JS_IsString(ctv)) {
             const cts = c.JS_ToCStringLen(ctx, null, ctv);
@@ -995,16 +1013,58 @@ fn extractResponse(ctx: ?*c.JSContext, result: c.JSValue, ct_out: *[]const u8) [
                 }
             }
         }
+        if (c.JS_IsString(enc)) {
+            const es = c.JS_ToCStringLen(ctx, null, enc);
+            if (es != null) {
+                defer c.JS_FreeCString(ctx, es);
+                if (std.mem.eql(u8, std.mem.span(es), "base64")) is_b64 = true;
+            }
+        }
+        if (c.JS_IsNumber(stv)) {
+            var sv: i32 = 0;
+            _ = c.JS_ToInt32(ctx, &sv, stv);
+            if (sv >= 100 and sv <= 599) st_out.* = @intCast(sv);
+        }
     }
     const s = c.JS_ToCStringLen(ctx, null, body_val) orelse return "handler non-string";
     defer c.JS_FreeCString(ctx, s);
     const text = std.mem.span(s);
+    if (is_b64) {
+        const n = b64Decode(text, &g_body_buf) orelse return "handler b64 too long";
+        g_body_len = n;
+        return g_body_buf[0..g_body_len];
+    }
     if (text.len > g_body_buf.len) return "handler too long";
     @memcpy(g_body_buf[0..text.len], text);
     g_body_len = text.len;
     return g_body_buf[0..g_body_len];
 }
 
-var g_body_buf: [128 * 1024]u8 = undefined; // chat history 等大块响应面（原 16KB 会静默截空）
+// base64 解码（web-shell 二进制资产面——侧车 .b64 → 原始字节；'='/杂项宽松跳过）
+fn b64Decode(src: []const u8, dst: []u8) ?usize {
+    const tbl = comptime blk: {
+        var t: [256]u8 = [_]u8{255} ** 256;
+        for ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", 0..) |ch, i| t[ch] = @intCast(i);
+        break :blk t;
+    };
+    var out: usize = 0;
+    var acc: u32 = 0;
+    var nbits: u32 = 0;
+    for (src) |ch| {
+        const v = tbl[ch];
+        if (v == 255) continue;
+        acc = (acc << 6) | v;
+        nbits += 6;
+        if (nbits >= 8) {
+            nbits -= 8;
+            if (out >= dst.len) return null;
+            dst[out] = @intCast((acc >> @as(u5, @intCast(nbits))) & 0xff);
+            out += 1;
+        }
+    }
+    return out;
+}
+
+var g_body_buf: [2 * 1024 * 1024]u8 = undefined; // chat history + web-shell 大资产面（shell vendor js 745KB；原 16KB/128KB 会静默截空）
 var g_body_len: usize = 0;
 var g_ctype_buf: [128]u8 = undefined;

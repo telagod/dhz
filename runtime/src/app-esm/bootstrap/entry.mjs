@@ -1033,6 +1033,34 @@ for (const row of merged.values()) {
           run().then(() => {}, (e) => { globalThis.__llmLoop = 'err:' + String((e && e.message) || e).slice(0, 160) })
           setTimeout(() => { if (globalThis.__llmLoop === 'pending') globalThis.__llmLoop = 'err:tmo' }, 5000)
         } catch (e) { globalThis.__llmLoop = 'err:' + String(e).slice(0, 120) }
+        // —— 真渠道探针（DSH_LLM_REAL：同 wire 面走 llm-relay——真 provider/model 一轮真 API）
+        if (globalThis.__dshLlmReal) {
+          try {
+            globalThis.__realLlm = 'pending'
+            const rcfg = JSON.parse(globalThis.__dshLlmReal)
+            const runReal = async () => {
+              // wire 级直达诊断：先绕开 adapter 打 relay，确认 guest↔relay 链路
+              try {
+                const fr = await fetch(rcfg.base + '/v1/chat/completions', { method: 'POST', body: JSON.stringify({ model: rcfg.model, stream: false, messages: [{ role: 'user', content: [{ type: 'text', text: 'say pong' }] }] }) })
+                const ft = await fr.text()
+                globalThis.__realWire = 'status=' + fr.status + ':body=' + ft.slice(0, 100)
+              } catch (fe) { globalThis.__realWire = 'err:' + String(fe && fe.message ? fe.message : fe).slice(0, 100) }
+              const llmMod = await import('@deepseek-ai/dsh-llm')
+              const lctx = ctx.isolate('llm')
+              const rt = new llmMod.LlmRuntime(lctx)
+              const Real = createMockLlmAdapter(rcfg.base) // relay 剥 mock 字段 + 注入 Bearer
+              rt.registerAdapter([rcfg.provider], new Real())
+              const um = llmMod.createUserMessage({ content: [{ type: 'text', text: '用一句中文回答：1+1=?' }], source: { kind: 'chat' } })
+              const p = await rt.prepareCall({ provider: rcfg.provider, model: rcfg.model, messages: [um] })
+              const ba = new llmMod.BlockAssembler()
+              for await (const ch of p.stream({ ...p.config, messages: [um] })) ba.push(ch)
+              const tb = ba.blocks().find((b) => b.type === 'text')
+              globalThis.__realLlm = tb && tb.text ? 'ok:' + String(tb.text).slice(0, 60) : 'bad:no-text:' + JSON.stringify(ba.blocks().map((b) => b.type))
+            }
+            runReal().then(() => {}, (e) => { globalThis.__realLlm = 'err:' + String((e && e.message) || e).slice(0, 120) })
+            setTimeout(() => { if (globalThis.__realLlm === 'pending') globalThis.__realLlm = 'err:tmo' }, 15000)
+          } catch (e) { globalThis.__realLlm = 'err:' + String(e).slice(0, 120) }
+        }
         // —— M-3 持久层差分：memory vs jsonl（sessionPersistence 同契约 list/inspect——同断言——三实现同绿雏形）
         try {
           const mkMem = () => {

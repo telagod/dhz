@@ -191,6 +191,21 @@ pub fn main(init: std.process.Init) !void {
         break :blk std.fmt.parseInt(u16, std.mem.span(s), 10) catch 18086;
     };
     const web_serve = web_mode and std.c.getenv("DSH_WEB_SERVE") != null;
+    // —— 真 LLM 渠道模式：DSH_LLM_REAL 置位 → guest 走 llm-relay（本地 HTTP→上游 HTTPS+Bearer）。
+    //    密钥只存在于 relay 进程（读 ~/.dsh/.credentials.yaml），不进 Zig/guest。
+    const llm_real = std.c.getenv("DSH_LLM_REAL") != null;
+    const llm_provider: []const u8 = blk: {
+        const s = std.c.getenv("DSH_LLM_PROVIDER") orelse break :blk "a6api";
+        break :blk std.mem.span(s);
+    };
+    const llm_model: []const u8 = blk: {
+        const s = std.c.getenv("DSH_LLM_MODEL") orelse break :blk "glm-5.3-flash";
+        break :blk std.mem.span(s);
+    };
+    const llm_relay_port: u16 = blk: {
+        const s = std.c.getenv("DSH_LLM_RELAY_PORT") orelse break :blk 18100;
+        break :blk std.fmt.parseInt(u16, std.mem.span(s), 10) catch 18100;
+    };
     // seam 适配器（自建引擎）；宿主服务注册到适配器 ctx（同引擎同 ctx）
     var act = try adapter.Adapter.init();
     defer act.deinit();
@@ -217,6 +232,24 @@ pub fn main(init: std.process.Init) !void {
     }
     const mock_pid_caught = g_mock_pid;
     defer killMockPidDo(mock_pid_caught);
+    // —— 真渠道中继自拉起（同 mock 形态：端口被占则用现有实例）
+    const g_relay_pid = if (llm_real) blk: {
+        const rw = @cImport({ @cInclude("proc_wrap.h"); });
+        var rport_buf: [16]u8 = undefined;
+        const rport_z = try std.fmt.bufPrintZ(&rport_buf, "{d}", .{llm_relay_port});
+        const rargv = [_]?[*:0]const u8{ "python3", "tools/llm-relay.py", @ptrCast(rport_z.ptr), null };
+        var r_in: c_int = 0;
+        var r_out: c_int = 0;
+        var r_err: c_int = 0;
+        var r_pid: c_int = 0;
+        if (rw.dsh_proc_spawn(@ptrCast(&rargv), null, &r_in, &r_out, &r_err, &r_pid, "", 2) != 0) break :blk 0;
+        break :blk r_pid;
+    } else 0;
+    if (llm_real) {
+        std.debug.print("boot smoke: llm relay spawned pid={d} port={d} provider={s} model={s}\n", .{ g_relay_pid, llm_relay_port, llm_provider, llm_model });
+    }
+    const relay_pid_caught = g_relay_pid;
+    defer killMockPidDo(relay_pid_caught); // 函数域 defer——块内 defer 会在 if 出块即杀中继（已踩）
     // Web 网关形态：事件循环挂引擎 ctx（http.start 的 opaque 读取面）
     var loop = try loop_mod.Loop.init();
     defer loop.deinit();
@@ -260,6 +293,14 @@ pub fn main(init: std.process.Init) !void {
         const set_src = try std.fmt.allocPrint(alloc, "globalThis.__headlessCfg = '{s}';", .{cfg_json});
         defer alloc.free(set_src);
         _ = c.JS_Eval(act_ctx, set_src.ptr, set_src.len, "headless-cfg.js", c.JS_EVAL_TYPE_GLOBAL);
+    }
+    // —— 真渠道 cfg 注入（entry 探测消费：provider/model/relay base——DSH_LLM_REAL 面）
+    if (llm_real) {
+        const rjson = try std.fmt.allocPrint(alloc, "{{\"provider\":\"{s}\",\"model\":\"{s}\",\"base\":\"http://127.0.0.1:{d}\"}}", .{ llm_provider, llm_model, llm_relay_port });
+        defer alloc.free(rjson);
+        const rsrc = try std.fmt.allocPrint(alloc, "globalThis.__dshLlmReal = '{s}';", .{rjson});
+        defer alloc.free(rsrc);
+        _ = c.JS_Eval(act_ctx, rsrc.ptr, rsrc.len, "llm-real-cfg.js", c.JS_EVAL_TYPE_GLOBAL);
     }
     // —— M-4 安全边界（不受信代码面自测）：内存上限 + 执行中断
     {
@@ -1363,6 +1404,16 @@ pub fn main(init: std.process.Init) !void {
             return error.HeadlessGolden;
         }
         std.debug.print("[headless] golden match ({d} bytes)\n", .{golden.len});
+    }
+    // —— 真渠道探针结果（真 API 一轮——宽限泵；非门禁，打印即证）
+    if (llm_real) {
+        _ = loop.run(12000);
+        const rw = try readGlobalStr(act_ctx, "__realWire");
+        defer std.heap.page_allocator.free(rw);
+        std.debug.print("boot smoke: realWire='{s}'\n", .{rw});
+        const rl = try readGlobalStr(act_ctx, "__realLlm");
+        defer std.heap.page_allocator.free(rl);
+        std.debug.print("boot smoke: realLlm='{s}'\n", .{rl});
     }
     printJsMemory(act.host.rt, "final");
     const rss_end = readVmRss(init.io);

@@ -561,6 +561,7 @@ for (const row of merged.values()) {
               if (!f) return { body: 'not found: ' + p, status: 404 }
               return f.enc === 'b64' ? { body: f.body, contentType: f.mime, encoding: 'base64' } : { body: f.body, contentType: f.mime }
             }
+            globalThis.dshServices.http.handle('/plugins/events', (p, h, _f, connId) => { globalThis.__hmrConns = (globalThis.__hmrConns || 0) + 1; return { sse: true } }) // HMR SSE（必须先于 /plugins/ 前缀注册）
             globalThis.dshServices.http.handle('/assets/', serveStatic, false)
             globalThis.dshServices.http.handle('/plugins/', serveStatic, false)
             globalThis.dshServices.http.handle('/dsh-whale/', serveStatic, false)
@@ -776,7 +777,7 @@ for (const row of merged.values()) {
               return __jsonResp(__unaryErr(rpcId, 'internal', String(e).slice(0, 120)), 500)
             }
           }, false)
-          globalThis.dshServices.http.handle('/debug/gateway', (p) => ({ body: JSON.stringify({ unaryLast: globalThis.__unaryLast || null, unaryMiss: globalThis.__unaryMiss || [], shellFiles: globalThis.__shellFiles || 0, shellSkip: globalThis.__shellSkip || 0, shellErr: globalThis.__shellErr || null, chatImport: globalThis.__chatImport || null, chatErr: globalThis.__chatErr || null, muxConns: Object.keys(globalThis.__muxConns || {}).length, muxWs: Object.keys(globalThis.__muxWs || {}).length, hostWs: Object.keys(globalThis.__hostWs || {}).length, muxWsId: globalThis.__muxWsId, muxPushRet: globalThis.__muxPushRet, muxWsInFrame: globalThis.__muxWsInFrame, reports: (globalThis.__dbgReports || []).slice(-12) }), contentType: 'application/json; charset=utf-8' }))
+          globalThis.dshServices.http.handle('/debug/gateway', (p) => ({ body: JSON.stringify({ unaryLast: globalThis.__unaryLast || null, unaryMiss: globalThis.__unaryMiss || [], shellFiles: globalThis.__shellFiles || 0, shellSkip: globalThis.__shellSkip || 0, shellErr: globalThis.__shellErr || null, chatImport: globalThis.__chatImport || null, chatErr: globalThis.__chatErr || null, muxConns: Object.keys(globalThis.__muxConns || {}).length, muxWs: Object.keys(globalThis.__muxWs || {}).length, hostWs: Object.keys(globalThis.__hostWs || {}).length, muxWsId: globalThis.__muxWsId, muxPushRet: globalThis.__muxPushRet, muxWsInFrame: globalThis.__muxWsInFrame, hmrConns: globalThis.__hmrConns, reports: (globalThis.__dbgReports || []).slice(-12) }), contentType: 'application/json; charset=utf-8' }))
           globalThis.dshServices.http.handle('/debug/report', (p, h, body) => {
             try { globalThis.__dbgReports = (globalThis.__dbgReports || []).concat(String(body || '').slice(0, 400)).slice(-40) } catch (e) {}
             return 'ok'

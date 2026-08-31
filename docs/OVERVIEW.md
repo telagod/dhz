@@ -30,7 +30,7 @@
 | full（生态面） | **36.9MiB** | **engine-ready ≈0.27s**（smoke 全链路墙钟 4.14s 为编排开销） | 约 7.7x 低于 Node 基线；远低于 256MiB 门禁 |
 | headless | **≈full**（同模块图） | ≈full | 全量 + agent 环 |
 
-核心链全部走 **llm 录播线**（mock 服务，无网可复现）；真 provider 适配器（deepseek）装载面完整，网络运行留档。
+核心链冒烟走 **llm 录播线**（mock 服务，无网可复现）；**真 LLM 渠道已通**：`tools/llm-relay.py` 本地明文 HTTP→上游 HTTPS+Bearer 中继（密钥只读 `~/.dsh/.credentials.yaml`，不进 Zig/guest），`DSH_LLM_REAL=1` 时 guest 直驱 adapter wire 面走真 API（验收：glm-5.3-flash 真往返 + WS 会话面板多轮对话）。
 
 ## 架构（分层）
 
@@ -110,6 +110,8 @@ DSH_WEB_PORT=3088 DSH_WEB_SERVE=1 \
 `bash tools/compat-report.sh` 执行 ReleaseFast boot smoke，并写入 `runtime/out/compat-report.json`。报告固定包含主链 `status/exitCode`、独立的 `compatibilityStatus`、`issueCounts`、结构化 `issues`、已验证的 `compatibilityLayers`、设计性跳过 `designSkips` 和可追溯 `evidence`；`issues[].disposition` 区分 `investigate`、`configuration-required`、`optional-skip`、`design-skip` 与 `zig-replacement`，因此兼容缺口不会被“smoke 通过”掩盖。
 
 `bash tools/perf-baseline.sh` 会分别构建并解析精确的 Debug/ReleaseFast 缓存产物，测量启动时间、峰值 RSS、二进制大小，并写入 `runtime/out/perf-report.json`；门禁分两条口径——`releaseEngineReady`（产品启动：进程起点 → entry import 落定，门限 500ms）与 `releaseFullStartup`（smoke 全链路墙钟，含编排等待，门限 10s），RSS 门限为 `256MiB`。
+
+**真渠道与会话面板（本轮新增）**：①`llm-relay.py`——Zig 运行时无 TLS 面，中继转发上游并注入 Bearer；响应全量缓冲+Content-Length 回写（契同 llm-mock——close-delimited 会被 guest 读成空 body）；消息白名单化（剥 dsh 附加字段，真 API 否则 400）。②`DSH_LLM_REAL`（+`DSH_LLM_PROVIDER/MODEL/RELAY_PORT/IMPORT`）——relay 自拉起（defer 须函数域，块内 defer 出块即杀中继）+ `__dshLlmReal` 注入 + realWire/realLlm 探针。③`tools/export-session.py`——Node 版 `session.jsonl.zstd` 导出双轨（展示轨 200 事件 + LLM 上下文轨归一化：合并连续同角色、首条须 user、2×tail 窗口——上游对非交替/assistant 开头的序列 stream 下静默回空）。④web 会话面板——`chat/*` 自定义事件类型（绕开 surfaceOp 契约）、ws 扩展 op `history`/`chat-send`（绕开上游协议 schema）、chat 轮**直驱 adapter._stream**（LlmRuntime 的 isolate 在 serve 循环拿不到 job 泵，流不推进——排障实锤）；WS 回复面换 128K 模块级缓冲（原 16KB 栈缓冲静默丢帧）。⑤`dhz-web chat`——自动定位当前目录最新主会话→导出→真渠道 serve。已知边界：v1 无工具环（纯文本对话）、导入为时点快照（Node 版后续写入不回流）。
 
 ## 当前已知限制
 

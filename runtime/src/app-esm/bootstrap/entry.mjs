@@ -524,7 +524,7 @@ for (const row of merged.values()) {
 
 
           try { globalThis.dshServices.http.start(Number(globalThis.__dshWebPort) || 18086) } catch (e) { globalThis.__webStartErr = 'listen port ' + (Number(globalThis.__dshWebPort) || 18086) + ' failed: ' + String(e && e.message ? e.message : e).slice(0, 60) + '（端口被占？）' }
-          const __webPage = { body: '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>dsh web</title></head><body><h1>dsh web</h1><p>Zig 运行时 web 服务模式在线。</p><ul><li>GET <code>/ping</code> — 活性：<span id="pp">…</span></li><li>POST <code>/post-echo</code> — 回显</li><li>WS <code>/ws</code> — 协议面（events/query/poll/sandbox/subscribe/whoami）</li></ul><p>完整 DSH Web GUI：<a href="http://127.0.0.1:3080">127.0.0.1:3080</a></p><script>fetch("/ping").then(function(r){return r.text()}).then(function(t){document.getElementById("pp").textContent=t}).catch(function(){document.getElementById("pp").textContent="err"})</script></body></html>', contentType: 'text/html; charset=utf-8' }
+          const __webPage = { body: '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>dsh web</title><style>body{font-family:system-ui;margin:24px;max-width:880px}#log{border:1px solid #ccc;border-radius:6px;padding:12px;height:52vh;overflow:auto;white-space:pre-wrap;font-size:13px;background:#fafafa}#row{display:flex;gap:8px;margin-top:10px}#in{flex:1;padding:8px;border:1px solid #ccc;border-radius:6px}button{padding:8px 16px}</style></head><body><h1>dsh web</h1><p>Zig 运行时 web 服务模式在线。活性：<span id="pp">…</span>　｜　完整 DSH GUI：<a href="http://127.0.0.1:3080">127.0.0.1:3080</a></p><div id="log">(载入中…)</div><div id="row"><input id="in" placeholder="继续说…（Enter 发送）"><button id="send">发送</button></div><script>var log=document.getElementById("log"),inp=document.getElementById("in");var ws=new WebSocket("ws://"+location.host+"/ws");function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")}function render(evs){var h="";for(var i=0;i<evs.length;i++){var e=evs[i];if(e.type==="chat/user")h+="\n【你】 "+esc(e.text)+"\n";else if(e.type==="chat/assistant")h+="\n【助手】 "+esc(e.text)+(e.toolCalls?"  🔧×"+e.toolCalls:"")+"\n";else if(e.type==="chat/tool-call")h+="  🔧 "+esc(e.name||"?")+" "+esc((e.text||"").slice(0,120))+"\n";else if(e.type==="chat/tool-result")h+="  ↩︎ "+esc((e.text||"").slice(0,200))+"\n"}log.innerHTML=h||"(空)";log.scrollTop=log.scrollHeight}ws.onopen=function(){ws.send(JSON.stringify({op:"subscribe",session:"chat"}));ws.send(JSON.stringify({op:"history",limit:300}))};ws.onmessage=function(ev){try{var m=JSON.parse(ev.data);if(m.op==="history")render(m.events);else if(m.op==="event"&&m.session==="chat")ws.send(JSON.stringify({op:"history",limit:300}));else if(m.op==="chat-reply"&&m.error)log.innerHTML+="\n[系统] "+esc(m.error)+"\n"}catch(x){}};function send(){var t=inp.value.trim();if(!t)return;inp.value="";ws.send(JSON.stringify({op:"chat-send",session:"chat",text:t}))}document.getElementById("send").onclick=send;inp.onkeydown=function(e){if(e.key==="Enter")send()};fetch("/ping").then(function(r){return r.text()}).then(function(t){document.getElementById("pp").textContent=t})</script></body></html>', contentType: 'text/html; charset=utf-8' }
           globalThis.dshServices.http.handle('/index.html', (p) => { globalThis.__webRoot = 'hit'; return __webPage })
           globalThis.dshServices.http.handle('/', (p) => __webPage)
           globalThis.dshServices.http.handle('/ping', (p) => 'pong:' + p)
@@ -535,7 +535,9 @@ for (const row of merged.values()) {
             if (frame !== undefined) {
               let msg = null
               try { msg = JSON.parse(frame) } catch (e) { msg = null }
-              if (msg && typeof msg === 'object' && protoSchemaFromModule) {
+              // dhz 扩展 op（history/chat-*——面板面）不走上游协议 schema；上游 op 校验不变
+              const dhzExt = msg && (msg.op === 'history' || (typeof msg.op === 'string' && msg.op.startsWith('chat-')))
+              if (msg && typeof msg === 'object' && protoSchemaFromModule && !dhzExt) {
                 try {
                   protoSchemaFromModule(msg)
                 } catch (e) { return 'ws-bad-schema:' + String(e && e.message ? e.message : e).slice(0, 60) }
@@ -595,6 +597,41 @@ for (const row of merged.values()) {
                     return 'ws-emitted:' + (msg.type ?? '')
                   } catch (e) { return 'ws-emit-err:' + String(e).slice(0, 60) }
                 }
+                if (msg && msg.op === 'history') {
+                  try {
+                    const sess = c.sessions.get('chat')
+                    const evs = sess ? sess.log : []
+                    const lim = Math.min(500, Math.max(1, msg.limit || 200))
+                    const cut = evs.slice(-lim).map((e) => {
+                      const d = e.data || {}
+                      const text = d.text || d.args || ''
+                      return { type: e.type, text: String(text).slice(0, 600), name: d.name, toolCalls: d.toolCalls }
+                    })
+                    return JSON.stringify({ op: 'history', total: evs.length, events: cut })
+                  } catch (e) { return 'history-err:' + String(e).slice(0, 60) }
+                }
+                if (msg && msg.op === 'chat-send') {
+                  if (!globalThis.__chatReady) return JSON.stringify({ op: 'chat-reply', error: 'chat 未就绪（需 DSH_LLM_REAL）' })
+                  const text = String(msg.text || '')
+                  if (!text) return '{"op":"chat-reply","error":"empty"}'
+                  const sess = c.sessions.get('chat')
+                  const st = globalThis.__chatState
+                  sess.append('chat/user', { text: text })
+                  st.msgs.push({ role: 'user', content: text })
+                  ;(async () => {
+                    try {
+                      // 直驱 adapter._stream（主 ctx 面——LlmRuntime 的 isolate 在 serve 循环里
+                      // 拿不到 job 泵，流永不推进；排障实锤 seen=not-called）
+                      const ba = new st.llmMod.BlockAssembler()
+                      for await (const ch of st.adapter._stream({ model: st.rcfg.model, messages: st.msgs, toolMode: true })) ba.push(ch)
+                      const tb = ba.blocks().find((b) => b.type === 'text')
+                      const reply = tb && tb.text ? String(tb.text) : '(空回复)'
+                      st.msgs.push({ role: 'assistant', content: reply })
+                      sess.append('chat/assistant', { text: reply })
+                    } catch (e) { sess.append('chat/assistant', { text: '(错误) ' + String(e && e.message ? e.message : e).slice(0, 160) }) }
+                  })()
+                  return JSON.stringify({ op: 'chat-reply', status: 'sent' })
+                }
                 return 'ws-echo:' + frame
             }
             const key = String((h && h['sec-websocket-key']) || '')
@@ -603,6 +640,34 @@ for (const row of merged.values()) {
             for (let i = 0; i < sha1.length; i += 2) bin += String.fromCharCode(parseInt(sha1.slice(i, i + 2), 16))
             return 'ws-accept:' + globalThis.btoa(bin)
           })
+          // —— chat 面（DSH_LLM_REAL）：导入 dsh 会话历史 + 真渠道 agent 状态（web 会话面板后端）
+          if (globalThis.__dshLlmReal) {
+            try {
+              const rcfg = JSON.parse(globalThis.__dshLlmReal)
+              const st0 = { rcfg: rcfg, msgs: [], llmMod: null, rt: null }
+              globalThis.__chatState = st0
+              const sess = c.sessions.create('chat', { seed: [], meta: { cwd: '/tmp' } })
+              if (rcfg.importPath) {
+                try {
+                  const raw = await c.fs.readText({ displayPath: rcfg.importPath, targetKey: rcfg.importPath })
+                  const imp = JSON.parse(typeof raw === 'string' ? raw : String(raw))
+                  for (const ev of (imp.events || [])) {
+                    if (ev.type === 'user') sess.append('chat/user', { text: ev.text || '' })
+                    else if (ev.type === 'assistant') sess.append('chat/assistant', { text: ev.text || '', toolCalls: ev.toolCalls || 0 })
+                    else if (ev.type === 'tool-call') sess.append('chat/tool-call', { name: ev.name || '?', args: ev.args || '' })
+                    else if (ev.type === 'tool-result') sess.append('chat/tool-result', { text: ev.text || '' })
+                  }
+                  for (const m of (imp.messages || [])) st0.msgs.push({ role: m.role, content: m.content })
+                  globalThis.__chatImport = 'ok:' + (imp.events || []).length + '/' + st0.msgs.length
+                } catch (ie) { globalThis.__chatImport = 'err:' + String(ie).slice(0, 80) }
+              }
+              const llmMod2 = await import('@deepseek-ai/dsh-llm')
+              st0.llmMod = llmMod2
+              const Real2 = createMockLlmAdapter(rcfg.base)
+              st0.adapter = new Real2()
+              globalThis.__chatReady = true
+            } catch (e) { globalThis.__chatErr = String(e).slice(0, 100) }
+          }
           globalThis.__gwReady = true
         } catch (e) { globalThis.__gwErr = String(e).slice(0, 90) }
         // —— fs 服务剩余 API 面（stat/fileUrl/processPath/contains）

@@ -206,6 +206,10 @@ pub fn main(init: std.process.Init) !void {
         const s = std.c.getenv("DSH_LLM_RELAY_PORT") orelse break :blk 18100;
         break :blk std.fmt.parseInt(u16, std.mem.span(s), 10) catch 18100;
     };
+    const llm_import: []const u8 = blk: {
+        const s = std.c.getenv("DSH_LLM_IMPORT") orelse break :blk "";
+        break :blk std.mem.span(s);
+    };
     // seam 适配器（自建引擎）；宿主服务注册到适配器 ctx（同引擎同 ctx）
     var act = try adapter.Adapter.init();
     defer act.deinit();
@@ -296,7 +300,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // —— 真渠道 cfg 注入（entry 探测消费：provider/model/relay base——DSH_LLM_REAL 面）
     if (llm_real) {
-        const rjson = try std.fmt.allocPrint(alloc, "{{\"provider\":\"{s}\",\"model\":\"{s}\",\"base\":\"http://127.0.0.1:{d}\"}}", .{ llm_provider, llm_model, llm_relay_port });
+        const rjson = try std.fmt.allocPrint(alloc, "{{\"provider\":\"{s}\",\"model\":\"{s}\",\"base\":\"http://127.0.0.1:{d}\",\"importPath\":\"{s}\"}}", .{ llm_provider, llm_model, llm_relay_port, llm_import });
         defer alloc.free(rjson);
         const rsrc = try std.fmt.allocPrint(alloc, "globalThis.__dshLlmReal = '{s}';", .{rjson});
         defer alloc.free(rsrc);
@@ -1411,6 +1415,9 @@ pub fn main(init: std.process.Init) !void {
         const rw = try readGlobalStr(act_ctx, "__realWire");
         defer std.heap.page_allocator.free(rw);
         std.debug.print("boot smoke: realWire='{s}'\n", .{rw});
+        const ci = try readGlobalStr(act_ctx, "__chatImport");
+        defer std.heap.page_allocator.free(ci);
+        std.debug.print("boot smoke: chatImport='{s}'\n", .{ci});
         const rl = try readGlobalStr(act_ctx, "__realLlm");
         defer std.heap.page_allocator.free(rl);
         std.debug.print("boot smoke: realLlm='{s}'\n", .{rl});

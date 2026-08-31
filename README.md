@@ -116,8 +116,9 @@ bash tools/compat-report.sh   # 生态兼容结构化报告 → out/compat-repor
 ### web 常驻服务
 
 ```bash
-runtime/tools/dhz-web          # 前台启动，默认 http://127.0.0.1:3088
-runtime/tools/dhz-web 3090     # 换端口
+runtime/tools/dhz-web          # 状态页模式（mock LLM），默认 http://127.0.0.1:3088
+runtime/tools/dhz-web chat     # 会话模式——真 LLM 渠道 + 自动导入当前目录最新 dsh 主会话，
+                               #   打开网页即可继续 Node 版里的对话（无缝切换）
 runtime/tools/dhz-web stop     # 停止（另开终端）
 ```
 
@@ -141,7 +142,7 @@ runtime/tools/dhz-web stop     # 停止（另开终端）
 
 ## 已知限制
 
-- **LLM 为本地录播**：headless/web 链路走 `tools/llm-mock.py`；真实 provider（deepseek 等）适配器装载面完整，但**网络执行尚未接线**——无 Authorization 头、provider/model 固定 mock。接线方案在案（env 密钥直通 + Bearer 注入），是下一阶段第一项
+- **真 LLM 渠道经中继**：冒烟链走 `tools/llm-mock.py`（无网可复现）；真渠道 = `tools/llm-relay.py`（本地 HTTP→上游 HTTPS+Bearer，密钥只读 `~/.dsh/.credentials.yaml` 不进 Zig 进程——Zig 运行时无 TLS 面是有意取舍）。`dhz-web chat` 即真渠道会话面板；**v1 边界**：纯文本对话（无工具环）、会话导入为时点快照
 - **单实例**（见上节警告）
 - **平台**：仅 Linux x86_64 验证；Windows/macOS 未验（方案后置）
 - **外部验收项**（本环境不可执行）：GUI 视觉快照、Node 版逐字节参照（golden 为自基线）、长跑压力（10 项目+5 subagent）、Windows 三平台

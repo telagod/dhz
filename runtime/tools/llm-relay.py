@@ -72,6 +72,8 @@ class H(http.server.BaseHTTPRequestHandler):
         path = self.path
         if path.startswith('/v1/') and BASE.endswith('/v1'):
             path = path[3:]
+        if os.environ.get('DSH_RELAY_TRACE'):
+            print('relay: POST %s body=%dB' % (path, len(body)), file=sys.stderr, flush=True)
         url = BASE + path
         try:
             r = requests.post(url, data=body, timeout=300, stream=True, headers={
@@ -83,6 +85,8 @@ class H(http.server.BaseHTTPRequestHandler):
             # close-delimited 流式会被 guest 读成空 body，实测 realWire 200:body=''）
             buf = b''.join(r.iter_content(4096))
             r.close()
+            if os.environ.get('DSH_RELAY_TRACE'):
+                print('relay: <- status=%d resp=%dB head=%s' % (r.status_code, len(buf), buf[:80]), file=sys.stderr, flush=True)
             self.send_response(r.status_code)
             self.send_header('Content-Type', r.headers.get('Content-Type', 'application/json'))
             self.send_header('Content-Length', str(len(buf)))

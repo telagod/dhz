@@ -1,10 +1,14 @@
 #!/bin/sh
 # dhz web 常驻服务启动器（Zig 运行时 web 模式）
-# 用法: dhz-web [端口=3088]        启动（前台，Ctrl+C 停止）
+# 用法: dhz-web [端口=3088]        状态页模式（mock LLM，无网可复现）
+#       dhz-web chat [端口=3088]   会话模式——真 LLM 渠道（llm-relay→上游）+ 自动导入
+#                                  当前 cwd 最新 dsh 主会话，打开网页即可继续对话
 #       dhz-web stop [端口=3088]   停止已在跑的实例
 # 注意: 单实例设计——运行时使用固定共享资源（llm-mock 18099、会话库 /tmp/dsh-sq.db WAL），
 #       同时跑两个实例会导致第二个 boot 停滞并报误导性错误（曾误报 ScaleSessions）。
+# 密钥: 只在 llm-relay 进程内读 $DSH_HOME/.credentials.yaml，不进 Zig/guest。
 
+ORIG_PWD=$PWD   # 会话按【调用者所在目录】定位（Node 版 sessions 目录同理）
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR/.." || exit 1   # 必须位于 runtime/（boot 拉取同目录 tools/llm-mock.py 与 golden/）
 
@@ -21,7 +25,10 @@ if [ "$1" = stop ]; then
   exit 0
 fi
 
+MODE=status
+if [ "$1" = chat ]; then MODE=chat; shift; fi
 PORT="${1:-3088}"
+
 existing=$(pgrep -f 'dsh-zig-runtime web' | head -1)
 if [ -n "$existing" ]; then
   echo "dhz-web: 已有实例在跑 (pid $existing)——单实例设计，先停掉: dhz-web stop" >&2
@@ -29,8 +36,25 @@ if [ -n "$existing" ]; then
 fi
 owner=$(port_pid "$PORT")
 if [ -n "$owner" ]; then
-  echo "dhz-web: 端口 $PORT 被其他进程占用 (pid $owner)，换个端口: dhz-web 3090" >&2
+  echo "dhz-web: 端口 $PORT 被其他进程占用 (pid $owner)，换个端口: dhz-web $MODE 3090" >&2
   exit 1
+fi
+
+if [ "$MODE" = chat ]; then
+  DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+  p=${ORIG_PWD#/}
+  esc=$(echo "$p" | sed 's|/|-|g')
+  sess_dir="$DSH_HOME_DIR/sessions/--${esc}--"   # Node 版转义：--a-b-c--
+  latest=$(ls -t "$sess_dir"/session-*/session.jsonl.zstd 2>/dev/null | head -1)
+  if [ -z "$latest" ]; then
+    echo "dhz-web: 未找到当前目录的 dsh 会话（$sess_dir）——先在 Node 版里聊过再来" >&2
+    exit 1
+  fi
+  python3 tools/export-session.py "$latest" 200 /tmp/dsh-chat-import.json || exit 1
+  echo "dhz-web chat: 导入 $(basename $(dirname "$latest"))（200 事件）→ http://127.0.0.1:$PORT/"
+  for p in $(pgrep -f 'llm-mock[.]py'); do kill $p 2>/dev/null; done
+  exec env DSH_WEB_PORT="$PORT" DSH_WEB_SERVE=1 DSH_LLM_REAL=1 DSH_LLM_IMPORT=/tmp/dsh-chat-import.json \
+    out/dsh-zig-runtime/dsh-zig-runtime web
 fi
 
 for p in $(pgrep -f 'llm-mock[.]py'); do kill $p 2>/dev/null; done

@@ -882,14 +882,14 @@ fn serveUpgraded(entry: *ConnEntry) void {
         c.JS_FreeValue(ctx, path_val);
         c.JS_FreeValue(ctx, payload_val);
         c.JS_FreeValue(ctx, conn_val);
-        var resp_buf: [16 * 1024]u8 = undefined;
+        // 响应走模块级 g_body_buf（128K——chat history 等大块面；原 16KB 栈缓冲静默丢帧已踩）
         var resp_len: usize = 0;
         if (!c.JS_IsException(result)) {
             const s = c.JS_ToCStringLen(ctx, null, result);
             if (s) |sp| {
                 const text = std.mem.span(sp);
-                if (text.len <= resp_buf.len) {
-                    @memcpy(resp_buf[0..text.len], text);
+                if (text.len <= g_body_buf.len) {
+                    @memcpy(g_body_buf[0..text.len], text);
                     resp_len = text.len;
                 }
                 c.JS_FreeCString(ctx, sp);
@@ -899,7 +899,7 @@ fn serveUpgraded(entry: *ConnEntry) void {
             const ex = c.JS_GetException(ctx);
             c.JS_FreeValue(ctx, ex);
         }
-        writeWsFrame(fd, resp_buf[0..resp_len]);
+        writeWsFrame(fd, g_body_buf[0..resp_len]);
         const remain = entry.len - fr.total;
         std.mem.copyForwards(u8, entry.buf[0..remain], entry.buf[fr.total..entry.len]);
         entry.len = remain;
@@ -1005,6 +1005,6 @@ fn extractResponse(ctx: ?*c.JSContext, result: c.JSValue, ct_out: *[]const u8) [
     return g_body_buf[0..g_body_len];
 }
 
-var g_body_buf: [16 * 1024]u8 = undefined;
+var g_body_buf: [128 * 1024]u8 = undefined; // chat history 等大块响应面（原 16KB 会静默截空）
 var g_body_len: usize = 0;
 var g_ctype_buf: [128]u8 = undefined;

@@ -637,6 +637,46 @@ for (const row of merged.values()) {
               if (method === 'skill.list') {
                 return __jsonResp(__unaryOk(rpcId, { skills: [] }))
               }
+              if (method === 'session.prompt') {
+                const pl = (msg && msg.payload) || {}
+                const sess = c.sessions.get(pl.sessionId)
+                if (!sess) return __jsonResp(__unaryErr(rpcId, 'not-found', 'session not found: ' + String(pl.sessionId)), 404)
+                const parts = Array.isArray(pl.content) ? pl.content : []
+                const text = parts.filter((x) => x && x.type === 'text').map((x) => x.text || '').join('\n')
+                if (!text) return __jsonResp(__unaryErr(rpcId, 'bad-request', 'empty prompt'), 400)
+                if (!globalThis.__chatReady) return __jsonResp(__unaryErr(rpcId, 'unavailable', 'llm not ready（需 DSH_LLM_REAL）'), 503)
+                const st = globalThis.__chatState
+                // 回合编排（rc.2 事件序列——GUI 实况渲染面）：turn/start → user/message → step/start
+                // → assistant/chunk（块三元）→ assistant/message → step/end → turn/end
+                const turn = (globalThis.__turnNo = (globalThis.__turnNo || 0) + 1)
+                const step = 1
+                sess.append('turn/start', { turn: turn })
+                sess.append('user/message', { content: [{ type: 'text', text: text }], role: 'user', source: { kind: 'user', ...(pl.clientTimeZone ? { clientTimeZone: pl.clientTimeZone } : {}) } }, { surfaceOp: 'append' })
+                sess.append('step/start', { turn: turn, step: step })
+                st.msgs.push({ role: 'user', content: text })
+                ;(async () => {
+                  try {
+                    const ba = new st.llmMod.BlockAssembler()
+                    for await (const ch of st.adapter._stream({ model: st.rcfg.model, messages: st.msgs, toolMode: true })) {
+                      if (ch && (ch.type === 'block-start' || ch.type === 'text-delta' || ch.type === 'block-end')) sess.append('assistant/chunk', { turn: turn, step: step, chunk: ch })
+                      ba.push(ch)
+                    }
+                    const tb = ba.blocks().find((b) => b.type === 'text')
+                    const reply = tb && tb.text ? String(tb.text) : '(空回复)'
+                    st.msgs.push({ role: 'assistant', content: reply })
+                    sess.append('assistant/message', { turn: turn, step: step, message: { role: 'assistant', content: [{ type: 'text', text: reply }] } }, { surfaceOp: 'append' })
+                    sess.append('step/end', { turn: turn, step: step })
+                    sess.append('turn/end', { turn: turn, reason: { kind: 'completed' } })
+                  } catch (e2) {
+                    sess.append('assistant/message', { turn: turn, step: step, message: { role: 'assistant', content: [{ type: 'text', text: '(错误) ' + String(e2 && e2.message ? e2.message : e2).slice(0, 160) }] } }, { surfaceOp: 'append' })
+                    sess.append('turn/end', { turn: turn, reason: { kind: 'error' } })
+                  }
+                })()
+                return __jsonResp(__unaryOk(rpcId, { accepted: true }))
+              }
+              if (method === 'session.cancel') {
+                return __jsonResp(__unaryOk(rpcId, { accepted: true }))
+              }
               globalThis.__unaryMiss = (globalThis.__unaryMiss || []).concat(method).slice(-20)
               return __jsonResp(__unaryErr(rpcId, 'unimplemented', 'method not implemented: ' + method), 501)
             } catch (e) {

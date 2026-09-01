@@ -35,6 +35,7 @@ const ConnEntry = struct {
     used: bool = false,
     upgraded: bool = false,
     sse: bool = false, // SSE 下行面（events.mux/host——写头后驻留，ssePush 供帧）
+    last_active_ms: i64 = 0, // keep-alive 空闲回收面（浏览器刷新/重连泄漏——无回收则表满后新连接静默空回复）
     buf: [16 * 1024]u8 = undefined,
     len: usize = 0,
     path: [256]u8 = undefined,
@@ -337,13 +338,27 @@ pub fn onLoopFdEvent(ctx: ?*c.JSContext, fd: i32) void {
     serveConn(fd);
 }
 
+fn nowMs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(i64, @intCast(ts.sec)) * 1000 + @divTrunc(@as(i64, @intCast(ts.nsec)), 1_000_000);
+}
+
 fn addConn(fd: i32) bool {
+    // 顺带空闲回收：accept 时扫全表（空闲 keep-alive/半开连接——浏览器刷新风暴曾耗尽表）
+    const now_ms = nowMs();
+    for (&g_conns) |*e2| {
+        if (e2.used and !e2.upgraded and e2.last_active_ms > 0 and now_ms - e2.last_active_ms > 120_000) {
+            removeConnLocked(e2.fd);
+        }
+    }
     for (&g_conns) |*e| {
         if (!e.used) {
             e.* = ConnEntry.empty();
             e.fd = fd;
             e.used = true;
             e.conn_id = g_next_conn_id; // accept 即分配（GET 回调第三参/SSE 面要用）
+            e.last_active_ms = nowMs();
             g_next_conn_id += 1;
             return true;
         }
@@ -401,10 +416,17 @@ fn serveConn(fd: i32) void {
     const entry = for (&g_conns) |*e| {
         if (e.used and e.fd == fd) break e;
     } else return;
+    // 空闲回收：keep-alive 驻留连接 120s 无新请求即收（浏览器刷新/重连泄漏兜底）
+    const now_serve = nowMs();
+    if (entry.last_active_ms > 0 and now_serve - entry.last_active_ms > 120_000) {
+        removeConnLocked(fd);
+        return;
+    }
     if (entry.upgraded) {
         serveUpgraded(entry);
         return;
     }
+    entry.last_active_ms = nowMs();
     // 一次事件：先读完当前可用数据
     while (true) {
         if (entry.len >= entry.buf.len) {
@@ -466,10 +488,17 @@ fn serveConn(fd: i32) void {
         }
         const keep = wantsKeepAlive(req);
         out.keep_alive = keep;
+        entry.last_active_ms = nowMs();
         _ = http_svc.writeResponse(fd, &out) catch {
             removeConnLocked(fd);
             return;
         };
+        if (!keep) {
+            // 非复用连接：写完即收（原实现依赖对端关——浏览器半开则泄漏）
+            removeConnLocked(fd);
+            return;
+        }
+
         // 消费掉本帧（前移剩余）
         const remain = entry.len - frame_end;
         std.mem.copyForwards(u8, entry.buf[0..remain], entry.buf[frame_end..entry.len]);

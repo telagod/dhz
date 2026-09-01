@@ -237,10 +237,13 @@ pub fn main(init: std.process.Init) !void {
                 var cbuf: [256]u8 = undefined;
                 const cn = f.readPositionalAll(init.io, &cbuf, 0) catch 0;
                 const content = cbuf[0..cn]; // /proc 文件 st_size=0——readFileAlloc 直接回空（已实测）
-                // 精确形态：可执行文件路径（/boot-smoke 或 dsh-zig-runtime），排除构建命令行
-                // （zig build / build runner / 探测 shell 的 cmdline 含 "boot-smoke-run" 字样——曾致自锁）
-                const looks_runner = (std.mem.indexOf(u8, content, "/boot-smoke") != null or std.mem.indexOf(u8, content, "dsh-zig-runtime") != null) and std.mem.indexOf(u8, content, "boot-smoke-run") == null;
-                if (looks_runner) {
+                // argv[0] 判定：真运行时进程的 argv[0] 是可执行文件路径（含 /boot-smoke 或
+                // dsh-zig-runtime 段）；shell/zig/build 的 argv[0] 是 bash/sh/zig——其参数串里的
+                // 路径不算（子串匹配曾误报探测 shell 自身——cmdline 含路径字样即中招）。
+                const nul0 = std.mem.indexOfScalar(u8, content, 0) orelse content.len;
+                const argv0 = content[0..nul0];
+                const is_runner_argv0 = (std.mem.indexOf(u8, argv0, "/boot-smoke") != null or std.mem.indexOf(u8, argv0, "dsh-zig-runtime") != null) and std.mem.indexOf(u8, argv0, "/bin/") == null;
+                if (is_runner_argv0 and argv0.len > 0 and argv0[0] == '/') {
                     offenders += 1;
                     if (first_offender == 0) first_offender = ep;
                 }

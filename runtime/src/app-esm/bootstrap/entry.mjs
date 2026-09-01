@@ -492,7 +492,12 @@ for (const row of merged.values()) {
             try {
               const big = globalThis.dshServices.http.post(18099, '/v1/big', '{}')
               globalThis.__bigOk = (big.length === 100000 && big.indexOf('x') === 0 && big.indexOf('y') < 0) ? 'ok:' + big.length : 'bad:' + big.length
-            } catch (e) { globalThis.__bigOk = 'err:' + String(e).slice(0, 80) }
+            } catch (e) {
+              // 冷启动竞态：mock 绑定可能慢于本探针（140ms）——重试一次（boot 步骤多间隔长
+              // 故 boot 模式不踩；web 模式实测偶发 http connect failed）
+              try { setTimeout(() => { try { const big2 = globalThis.dshServices.http.post(18099, '/v1/big', '{}'); globalThis.__bigOk = (big2.length === 100000) ? 'ok:' + big2.length : 'bad:' + big2.length } catch (e2) { globalThis.__bigOk = 'err:' + String(e2).slice(0, 80) } }, 400)
+              } catch (e3) {}
+            }
             // —— wire 级逐块：ondata 回调（每读一块调一次——mock 分块 8×12500B）
             try {
               let chunks = 0
@@ -633,8 +638,10 @@ for (const row of merged.values()) {
               c.on('session/created', (sess) => { __muxBroadcast({ type: 'session/subscribed', sessionId: sess && sess.id, lastSeq: 0 }) })
             } catch (e) { globalThis.__muxWireErr = String(e).slice(0, 60) }
           }
-          const __unaryOk = (rpcId, value) => JSON.stringify({ rpcId: rpcId, result: { ok: true, value: value } })
-          const __unaryErr = (rpcId, code, msg) => JSON.stringify({ rpcId: rpcId, result: { ok: false, error: { code: code, message: msg, details: {} } } })
+          // 全形信封（serverResponseSchema：type 判别字段必带——缺它客户端 zod 拒收；
+          // 实测 3080 响应同形，GUI 侧 callUnary/webRpc 双通道均按此校验）
+          const __unaryOk = (rpcId, value) => JSON.stringify({ type: 'server-response', rpcId: rpcId, result: { ok: true, value: value } })
+          const __unaryErr = (rpcId, code, msg) => JSON.stringify({ type: 'server-response', rpcId: rpcId, result: { ok: false, error: { code: code, message: msg, details: {} } } })
           const __jsonResp = (body, status) => ({ body: body, contentType: 'application/json; charset=utf-8', ...(status ? { status: status } : {}) })
           const __sessionSummary = (s) => {
             const evs = s.log || []

@@ -771,6 +771,21 @@ for (const row of merged.values()) {
               if (method === 'session.cancel') {
                 return __jsonResp(__unaryOk(rpcId, { accepted: true }))
               }
+              // —— 设置页面（动态 Cordis 面板 + 凭据状态）
+              if (method === 'dynamicCordisRunner/syncInspectManifest') {
+                return __jsonResp(__unaryOk(rpcId, null))
+              }
+              if (method === 'dynamicCordisRunner/inventory') {
+                return __jsonResp(__unaryOk(rpcId, []))
+              }
+              if (method === 'credentials.describe') {
+                const pl5 = (msg && msg.payload) || {}
+                const creds = {}
+                for (const ref of (pl5.refs || [])) {
+                  creds[ref] = { configured: true, source: 'credentials-yaml', writable: true }
+                }
+                return __jsonResp(__unaryOk(rpcId, { credentials: creds }))
+              }
               globalThis.__unaryMiss = (globalThis.__unaryMiss || []).concat(method).slice(-20)
               return __jsonResp(__unaryErr(rpcId, 'unimplemented', 'method not implemented: ' + method), 501)
             } catch (e) {
